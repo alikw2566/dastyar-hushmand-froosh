@@ -1,0 +1,66 @@
+{
+  "realm": "mokalemeban",
+  "enabled": true,
+  "displayName": "مکالمه‌بان",
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": true,
+  "verifyEmail": false,
+  "passwordPolicy": "length(10) and digits(1)",
+  "roles": {
+    "realm": [
+      { "name": "admin", "description": "مدیر شرکت" },
+      { "name": "supervisor", "description": "سرپرست فروش" },
+      { "name": "seller", "description": "فروشنده" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "mokalemeban-web",
+      "name": "Mokalemeban Dashboard",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:3000/api/auth/callback", "https://*/api/auth/callback"],
+      "webOrigins": ["http://localhost:3000", "+"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "protocolMappers": [
+        {
+          "name": "tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "tenant_id",
+            "claim.value": "00000000-0000-4000-8000-000000000001",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "mokalemeban-api",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "mokalemeban-api",
+      "name": "Mokalemeban API",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false
+    }
+  ],
+  "defaultRoles": ["admin"]
+}

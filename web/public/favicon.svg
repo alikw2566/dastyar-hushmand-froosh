@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="مکالمه‌بان">
+  <defs>
+    <linearGradient id="g" x1="8" y1="6" x2="55" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#102B4E"/>
+      <stop offset="1" stop-color="#07182F"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="17" fill="url(#g)"/>
+  <path d="M18 19h28v8H29v7h14v8H29v13H18V19Z" fill="#F6FBFF"/>
+  <circle cx="47" cy="17" r="7" fill="#19C3B1"/>
+</svg>
