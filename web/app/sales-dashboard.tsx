@@ -3,8 +3,9 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminPanel } from "./admin-panel";
 import { CallDetailView, CallsExplorer, CallItem, CallTable, FollowupsView, TaskItem, fa, requestJson } from "./pilot-views";
+import { CoachingView, CustomersView, OpportunitiesView, ReportsView, SearchView, TeamPerformanceView } from "./sales-modules";
 
-type View = "overview" | "calls" | "tasks" | "messages" | "settings";
+type View = "overview" | "calls" | "customers" | "tasks" | "opportunities" | "team" | "coaching" | "reports" | "search" | "messages" | "settings";
 type CurrentUser = { name: string; email: string; role: string };
 type OverviewData = { total_calls: number; completed_calls: number; average_score: number | null; confirmed_conversion_rate: number | null };
 type MessageItem = { id: string; channel: string; subject?: string | null; content: string; status: string };
@@ -13,7 +14,13 @@ type Organization = { id: string; name: string; plan: string; monthly_minute_lim
 const nav: Array<{ id: View; label: string; icon: string }> = [
   { id: "overview", label: "نمای کلی", icon: "⌂" },
   { id: "calls", label: "تماس‌ها", icon: "☎" },
+  { id: "customers", label: "مشتریان", icon: "♙" },
   { id: "tasks", label: "پیگیری‌ها", icon: "✓" },
+  { id: "opportunities", label: "فرصت‌ها و اعتراض‌ها", icon: "◇" },
+  { id: "team", label: "تیم فروش", icon: "♟" },
+  { id: "coaching", label: "مربیگری", icon: "◎" },
+  { id: "reports", label: "گزارش‌ها", icon: "▥" },
+  { id: "search", label: "جست‌وجو", icon: "⌕" },
   { id: "messages", label: "پیام‌ها", icon: "✉" },
   { id: "settings", label: "پنل مدیریت", icon: "♜" },
 ];
@@ -24,7 +31,7 @@ function initialView(role: string): View {
   if (typeof window === "undefined") return "overview";
   const value = new URLSearchParams(window.location.search).get("view");
   if (value === "settings" || value === "admin") return ["مدیر", "مدیر فروش", "سرپرست"].includes(role) ? "settings" : "overview";
-  return ["overview", "calls", "tasks", "messages"].includes(value ?? "") ? value as View : "overview";
+  return nav.some((item) => item.id === value) ? value as View : "overview";
 }
 
 export function SalesDashboard({ currentUser }: { currentUser: CurrentUser }) {
@@ -71,8 +78,8 @@ export function SalesDashboard({ currentUser }: { currentUser: CurrentUser }) {
   const canExportCalls = ["مدیر", "مدیر فروش", "سرپرست"].includes(currentUser.role);
   const visibleNav = useMemo(() => nav.filter((item) => {
     if (["مدیر", "مدیر فروش", "سرپرست"].includes(currentUser.role)) return true;
-    if (currentUser.role === "مشاهده‌گر") return item.id === "overview" || item.id === "calls";
-    return item.id !== "messages" && item.id !== "settings";
+    if (currentUser.role === "مشاهده‌گر") return ["overview", "calls", "customers", "search"].includes(item.id);
+    return !["messages", "settings", "team", "reports"].includes(item.id);
   }), [currentUser.role]);
   function chooseView(next: View) {
     setView(next); setSelectedCallId(null); setMenuOpen(false);
@@ -104,7 +111,13 @@ export function SalesDashboard({ currentUser }: { currentUser: CurrentUser }) {
         {selectedCallId && <CallDetailView callId={selectedCallId} isAdmin={currentUser.role === "مدیر"} readOnly={readOnly} canReprocess={canExportCalls} onBack={closeCall} onToast={setToast} />}
         {!loading && !error && !selectedCallId && view === "overview" && <Overview overview={overview} calls={recentCalls} pendingTasks={pendingTasks} canUpload={!readOnly} onUpload={() => setUploadOpen(true)} onCalls={() => chooseView("calls")} onOpen={openCall} />}
         {!loading && !error && !selectedCallId && view === "calls" && <CallsExplorer canUpload={!readOnly} canExport={canExportCalls} onUpload={() => setUploadOpen(true)} onOpen={openCall} />}
+        {!loading && !error && !selectedCallId && view === "customers" && <CustomersView onOpenCall={openCall} />}
         {!loading && !error && !selectedCallId && view === "tasks" && <FollowupsView onOpenCall={openCall} onToast={setToast} onCountChanged={loadShell} />}
+        {!loading && !error && !selectedCallId && view === "opportunities" && <OpportunitiesView onOpenCall={openCall} />}
+        {!loading && !error && !selectedCallId && view === "team" && <TeamPerformanceView />}
+        {!loading && !error && !selectedCallId && view === "coaching" && <CoachingView />}
+        {!loading && !error && !selectedCallId && view === "reports" && <ReportsView />}
+        {!loading && !error && !selectedCallId && view === "search" && <SearchView onOpenCall={openCall} />}
         {!loading && !error && !selectedCallId && view === "messages" && <Messages items={messages} onChanged={loadShell} onToast={setToast} />}
         {!loading && !error && !selectedCallId && view === "settings" && <AdminPanel key={(organization?.id ?? "") + "-" + (organization?.name ?? "")} organization={organization} currentRole={currentUser.role} onOrganizationChanged={loadShell} onToast={setToast} />}
       </div>

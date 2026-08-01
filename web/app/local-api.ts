@@ -111,6 +111,18 @@ export async function handleLocalApi(request: Request, path: string[]): Promise<
     return json({ error: "processing_backend_required", detail: "پردازش مجدد در حالت D1 محلی غیرفعال است؛ سرویس Worker را متصل کنید." }, 501);
   }
 
+  if (path[0] === "search" && path.length === 1 && method === "GET") {
+    const query = normalizePersian(new URL(request.url).searchParams.get("q") ?? "");
+    if (query.length < 2 || query.length > 300) return json({ error: "invalid_search_query" }, 422);
+    const where = ["s.organization_id = ?", "(s.normalized_text LIKE ? OR s.content LIKE ?)"];
+    const values: unknown[] = [user.organizationId, `%${query}%`, `%${query}%`];
+    if (ownOnly) { where.push("c.seller_email = ?"); values.push(user.email); }
+    const rows = await DB.prepare(`SELECT s.call_id,s.position,s.start_seconds,s.speaker_label,s.content
+      FROM transcript_segments s JOIN calls c ON c.id=s.call_id
+      WHERE ${where.join(" AND ")} ORDER BY s.call_id,s.position LIMIT 50`).bind(...values).all();
+    return json({ query, mode: "text", evidence: rows.results });
+  }
+
   if (path[0] === "tasks" && path.length === 1 && method === "GET") {
     const url = new URL(request.url); const bucket = url.searchParams.get("bucket") ?? "all"; const where = ["organization_id = ?"]; const values: unknown[] = [user.organizationId];
     if (ownOnly) { where.push("assignee_email = ?"); values.push(user.email); }

@@ -17,11 +17,30 @@ test("ships a gated Persian dashboard without sample records", async () => {
   assert.match(dashboard, /اطلاعات واقعی فضای کاری شما/);
   assert.match(dashboard, /دستیار هوشمند فروش/);
   assert.match(dashboard, /پنل مدیریت/);
-  assert.match(dashboard, /item\.id !== "settings"/);
+  assert.match(dashboard, /"customers"/);
+  assert.match(dashboard, /"opportunities"/);
+  assert.match(dashboard, /"coaching"/);
+  assert.match(dashboard, /"reports"/);
+  assert.match(dashboard, /"search"/);
   assert.match(dashboard, /هنوز تماسی ثبت نشده است/);
   assert.match(dashboard, /api\/v1\/calls/);
   assert.match(dashboard, /رضایت لازم برای ضبط/);
   assert.doesNotMatch(dashboard, /codex-preview/i);
+});
+
+test("exposes the requested sales modules as real data-backed pages", async () => {
+  const [dashboard, modules, localApi] = await Promise.all([
+    readFile(new URL("../app/sales-dashboard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/sales-modules.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/local-api.ts", import.meta.url), "utf8"),
+  ]);
+  for (const label of ["مشتریان", "فرصت‌ها و اعتراض‌ها", "تیم فروش", "مربیگری", "گزارش‌ها", "جست‌وجو"]) assert.match(dashboard, new RegExp(label));
+  for (const component of ["CustomersView", "OpportunitiesView", "TeamPerformanceView", "CoachingView", "ReportsView", "SearchView"]) assert.match(modules, new RegExp(`export function ${component}`));
+  assert.match(modules, /\/api\/v1\/calls\?page=1&page_size=100/);
+  assert.match(modules, /\/api\/v1\/search\?q=/);
+  assert.match(localApi, /path\[0\] === "search"/);
+  assert.match(localApi, /normalizePersian/);
+  assert.doesNotMatch(modules, /sample|نمونه آزمایشی|داده ساختگی/i);
 });
 
 test("ships production metadata and required Sites bindings", async () => {
