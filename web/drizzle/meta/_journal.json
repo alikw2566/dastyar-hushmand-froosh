@@ -8,6 +8,20 @@
       "when": 1785305807954,
       "tag": "0000_gifted_liz_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785575190561,
+      "tag": "0001_even_mastermind",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785575224785,
+      "tag": "0002_third_proudstar",
+      "breakpoints": true
     }
   ]
 }

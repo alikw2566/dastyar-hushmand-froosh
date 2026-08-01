@@ -56,8 +56,9 @@ export async function getPrivateOidcUser(): Promise<ChatGPTUser | null> {
     const email = claims.email ?? claims.preferred_username;
     if (!email) return null;
     const fullName = claims.name ?? null;
-    const roleKey = claims.role ?? claims.realm_access?.roles?.find((item) => ["admin", "supervisor", "seller"].includes(item));
-    const role = roleKey === "admin" ? "مدیر" : roleKey === "supervisor" ? "سرپرست" : roleKey === "seller" ? "فروشنده" : "کاربر";
+    const roleKey = claims.role ?? claims.realm_access?.roles?.find((item) => ["admin", "manager", "supervisor", "agent", "viewer", "seller"].includes(item));
+    const roleNames: Record<string, string> = { admin: "مدیر", manager: "مدیر فروش", supervisor: "سرپرست", agent: "کارشناس", viewer: "مشاهده‌گر", seller: "فروشنده" };
+    const role = roleNames[roleKey ?? ""] ?? "مشاهده‌گر";
     return { email, fullName, displayName: fullName ?? email, role };
   } catch {
     return null;

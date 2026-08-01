@@ -9,21 +9,28 @@ type Team = { id: string; name: string; description: string; supervisor_email?: 
 type Criterion = { label: string; weight: number };
 type Scorecard = { id: string; name: string; criteria: Criterion[]; active: number; created_at: string };
 type Automation = { id: string; name: string; event: string; action: string; mode: string; enabled: number };
-type Integration = { id: string; name: string; kind: string; status: string };
+type Integration = { id: string; name: string; kind: string; status: string; operational?: boolean; can_activate?: boolean; limitation?: string };
 type AiSettings = { provider: string; transcription_model: string; analysis_model: string; min_confidence: number };
 type SecuritySettings = { require_consent: number; audio_download_enabled: number };
 type Audit = { id: string; actor_email: string; action: string; entity_type: string; entity_id?: string | null; created_at: string };
-type AdminTab = "overview" | "members" | "teams" | "scorecards" | "automations" | "integrations" | "ai" | "security" | "audit";
+type Accuracy = { measured: boolean; wer?: number | null; cer?: number | null; sample_count?: number; evaluated_at?: string | null; dataset?: string | null; message?: string };
+type Glossary = { id: string; term: string; category: string; aliases?: string[]; active: number; created_at: string };
+type IssabelSettings = { import_mode: string; mode?: string; recordings_path?: string; sftp_host?: string; sftp_port?: number; sftp_username?: string; sftp_remote_path?: string; poll_interval: number; file_stability_seconds: number; allowed_extensions: string; quarantine_path?: string; filename_pattern?: string; enabled: number; editable?: boolean; watcher_available?: boolean; watcher_health?: string; limitation?: string };
+type ProcessingOperation = { id: string; source_file?: string; file_name?: string; status: string; failed_stage?: string | null; stage?: string | null; error_type?: string | null; error_code?: string | null; safe_message?: string | null; error_message?: string | null; retry_count?: number; last_retry_at?: string | null; next_retry_at?: string | null; duration_seconds?: number | null; created_at?: string; updated_at?: string; worker?: string | null; correlation_id?: string | null; can_retry?: boolean; can_quarantine?: boolean; can_restore?: boolean; can_download_diagnostics?: boolean };
+type OperationsData = { items: ProcessingOperation[]; capabilities?: { retry?: boolean; diagnostics?: boolean; quarantine?: boolean }; limitation?: string };
+type AdminTab = "overview" | "members" | "teams" | "scorecards" | "automations" | "integrations" | "operations" | "accuracy" | "glossary" | "issabel" | "ai" | "security" | "audit";
 
 const tabs: Array<{ id: AdminTab; label: string; icon: string }> = [
   { id: "overview", label: "نمای مدیریتی", icon: "◫" }, { id: "members", label: "کاربران", icon: "♙" },
   { id: "teams", label: "تیم‌ها", icon: "♟" }, { id: "scorecards", label: "KPI و امتیاز", icon: "◎" },
   { id: "automations", label: "اتوماسیون", icon: "⚡" }, { id: "integrations", label: "اتصال‌ها", icon: "⌁" },
+  { id: "operations", label: "عملیات پردازش", icon: "⚙" }, { id: "accuracy", label: "دقت مدل", icon: "٪" },
+  { id: "glossary", label: "واژه‌نامه", icon: "آ" }, { id: "issabel", label: "Issabel", icon: "☎" },
   { id: "ai", label: "هوش مصنوعی", icon: "✦" }, { id: "security", label: "امنیت و داده", icon: "◇" },
   { id: "audit", label: "گزارش فعالیت", icon: "≡" },
 ];
 
-const roleLabel: Record<string, string> = { admin: "مدیر", supervisor: "سرپرست", seller: "فروشنده" };
+const roleLabel: Record<string, string> = { admin: "مدیر", manager: "مدیر فروش", supervisor: "سرپرست", agent: "کارشناس", viewer: "مشاهده‌گر", seller: "فروشنده (قدیمی)" };
 const actionLabel: Record<string, string> = {
   "organization.created": "فضای کاری ساخته شد", "organization.updated": "تنظیمات شرکت تغییر کرد", "member.created": "کاربر اضافه شد", "member.updated": "دسترسی کاربر تغییر کرد",
   "team.created": "تیم ساخته شد", "team.updated": "تیم تغییر کرد", "scorecard.created": "چک‌لیست ساخته شد", "scorecard.activated": "چک‌لیست فعال شد",
@@ -40,42 +47,64 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) throw new Error(result.error ?? result.detail ?? "request_failed"); return result as T;
 }
 
-export function AdminPanel({ organization, onOrganizationChanged, onToast }: { organization: Organization | null; onOrganizationChanged: () => Promise<void>; onToast: (message: string) => void }) {
-  const [tab, setTab] = useState<AdminTab>("overview"); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+async function optionalApi<T>(url: string, fallback: T): Promise<T> {
+  try { return await api<T>(url); } catch { return fallback; }
+}
+
+export function AdminPanel({ organization, currentRole, onOrganizationChanged, onToast }: { organization: Organization | null; currentRole: string; onOrganizationChanged: () => Promise<void>; onToast: (message: string) => void }) {
+  const [tab, setTab] = useState<AdminTab>(currentRole === "مدیر" ? "overview" : "scorecards"); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [overview, setOverview] = useState<Overview | null>(null); const [members, setMembers] = useState<Member[]>([]); const [teams, setTeams] = useState<Team[]>([]);
   const [scorecards, setScorecards] = useState<Scorecard[]>([]); const [automations, setAutomations] = useState<Automation[]>([]); const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null); const [security, setSecurity] = useState<SecuritySettings | null>(null); const [audits, setAudits] = useState<Audit[]>([]);
+  const [accuracy, setAccuracy] = useState<Accuracy>({ measured: false, message: "دقت هنوز اندازه‌گیری نشده است." }); const [glossary, setGlossary] = useState<Glossary[]>([]);
+  const [issabel, setIssabel] = useState<IssabelSettings>({ import_mode: "disabled", poll_interval: 60, file_stability_seconds: 15, allowed_extensions: "wav,mp3,gsm", enabled: 0, watcher_available: false });
+  const [operations, setOperations] = useState<OperationsData>({ items: [] });
 
   const refresh = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [overviewData, memberData, teamData, scorecardData, automationData, integrationData, aiData, securityData, auditData] = await Promise.all([
-        api<Overview>("/api/v1/admin/overview"), api<{ items: Member[] }>("/api/v1/admin/members"), api<{ items: Team[] }>("/api/v1/admin/teams"),
-        api<{ items: Scorecard[] }>("/api/v1/admin/scorecards"), api<{ items: Automation[] }>("/api/v1/admin/automations"), api<{ items: Integration[] }>("/api/v1/admin/integrations"),
-        api<AiSettings>("/api/v1/admin/ai-settings"), api<SecuritySettings>("/api/v1/admin/security"), api<{ items: Audit[] }>("/api/v1/admin/audit-logs"),
+      const [overviewData, memberData, teamData, scorecardData, automationData, integrationData, aiData, securityData, auditData, accuracyData, glossaryData, issabelData, operationsData] = await Promise.all([
+        optionalApi<Overview>("/api/v1/admin/overview", { members: 0, teams: 0, calls: 0, used_minutes: 0, storage_bytes: 0, pending_tasks: 0, active_integrations: 0, active_rules: 0 }), optionalApi<{ items: Member[] }>("/api/v1/admin/members", { items: [] }), optionalApi<{ items: Team[] }>("/api/v1/admin/teams", { items: [] }),
+        optionalApi<{ items: Scorecard[] }>("/api/v1/admin/scorecards", { items: [] }), optionalApi<{ items: Automation[] }>("/api/v1/admin/automations", { items: [] }), optionalApi<{ items: Integration[] }>("/api/v1/admin/integrations", { items: [] }),
+        optionalApi<AiSettings>("/api/v1/admin/ai-settings", { provider: "openai", transcription_model: "—", analysis_model: "—", min_confidence: .75 }), optionalApi<SecuritySettings>("/api/v1/admin/security", { require_consent: 1, audio_download_enabled: 0 }), optionalApi<{ items: Audit[] }>("/api/v1/admin/audit-logs", { items: [] }),
+        optionalApi<Accuracy>("/api/v1/admin/accuracy", { measured: false, message: "دقت هنوز با دیتاست واقعی اندازه‌گیری نشده است." }),
+        optionalApi<{ items: Glossary[] }>("/api/v1/admin/glossary", { items: [] }),
+        optionalApi<IssabelSettings>("/api/v1/admin/issabel-settings", { import_mode: "disabled", poll_interval: 60, file_stability_seconds: 15, allowed_extensions: "wav,mp3,gsm", enabled: 0, watcher_available: false, limitation: "API تنظیمات Issabel در Backend فعلی در دسترس نیست." }),
+        optionalApi<OperationsData>("/api/v1/admin/processing-operations", { items: [], limitation: "API عملیات پردازش در Backend فعلی در دسترس نیست." }),
       ]);
       setOverview(overviewData); setMembers(memberData.items); setTeams(teamData.items); setScorecards(scorecardData.items); setAutomations(automationData.items); setIntegrations(integrationData.items); setAiSettings(aiData); setSecurity(securityData); setAudits(auditData.items);
+      const rawIssabel = issabelData as IssabelSettings & { allowed_extensions?: string | string[]; mode?: string };
+      setAccuracy(accuracyData); setGlossary(glossaryData.items); setIssabel({ ...issabelData, import_mode: rawIssabel.import_mode ?? rawIssabel.mode ?? "disabled", allowed_extensions: Array.isArray(rawIssabel.allowed_extensions) ? rawIssabel.allowed_extensions.join(",") : rawIssabel.allowed_extensions ?? "wav,mp3,gsm" }); setOperations(operationsData);
     } catch { setError("دریافت اطلاعات مدیریتی انجام نشد. دسترسی مدیر و اتصال سرویس را بررسی کنید."); } finally { setLoading(false); }
   }, []);
   useEffect(() => { const timer = window.setTimeout(() => void refresh(), 0); return () => window.clearTimeout(timer); }, [refresh]);
 
   async function run(work: () => Promise<unknown>, success: string) { try { await work(); await refresh(); onToast(success); } catch (cause) { onToast(errorMessage(cause)); } }
   const activeScorecard = useMemo(() => scorecards.find((item) => Boolean(item.active)), [scorecards]);
+  const visibleTabs = useMemo(() => tabs.filter((item) => {
+    if (currentRole === "مدیر") return true;
+    if (currentRole === "مدیر فروش") return ["scorecards", "operations", "accuracy", "glossary", "issabel"].includes(item.id);
+    return ["scorecards", "operations", "accuracy", "glossary"].includes(item.id);
+  }), [currentRole]);
 
   return <div className="admin-page">
     <div className="live-heading admin-title"><div><span>مرکز کنترل شرکت</span><h1>پنل مدیریت</h1><p>کاربران، کیفیت فروش، هوش مصنوعی و امنیت را از یک نقطه مدیریت کنید.</p></div><div className="admin-health"><i /> سامانه آماده است</div></div>
     <div className="admin-layout">
-      <aside className="admin-nav">{tabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><i>{item.icon}</i><span>{item.label}</span>{item.id === "members" && <b>{fa(members.length)}</b>}</button>)}</aside>
+      <aside className="admin-nav">{visibleTabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><i>{item.icon}</i><span>{item.label}</span>{item.id === "members" && <b>{fa(members.length)}</b>}</button>)}</aside>
       <section className="admin-surface">
         {loading ? <AdminState title="در حال دریافت اطلاعات مدیریت" /> : error ? <AdminState title={error} action={<button onClick={() => void refresh()}>تلاش دوباره</button>} /> : <>
           {tab === "overview" && overview && <AdminOverview data={overview} organization={organization} activeScorecard={activeScorecard} onTab={setTab} />}
-          {tab === "members" && <Members members={members} teams={teams} run={run} />}
+          {tab === "members" && currentRole === "مدیر" && <Members members={members} teams={teams} run={run} />}
           {tab === "teams" && <Teams teams={teams} members={members} run={run} />}
-          {tab === "scorecards" && <Scorecards items={scorecards} run={run} />}
+          {tab === "scorecards" && <Scorecards items={scorecards} editable={currentRole === "مدیر"} run={run} />}
           {tab === "automations" && <Automations items={automations} run={run} />}
           {tab === "integrations" && <Integrations items={integrations} run={run} />}
+          {tab === "operations" && <ProcessingOperations data={operations} run={run} />}
+          {tab === "accuracy" && <AccuracyPanel data={accuracy} />}
+          {tab === "glossary" && <GlossaryPanel items={glossary} editable={currentRole === "مدیر" || currentRole === "مدیر فروش"} run={run} />}
+          {tab === "issabel" && <IssabelPanel settings={issabel} run={run} onToast={onToast} />}
           {tab === "ai" && aiSettings && <AiConfiguration settings={aiSettings} run={run} />}
-          {tab === "security" && security && <Security organization={organization} settings={security} run={run} onOrganizationChanged={onOrganizationChanged} />}
+          {tab === "security" && currentRole === "مدیر" && security && <Security organization={organization} settings={security} run={run} onOrganizationChanged={onOrganizationChanged} />}
           {tab === "audit" && <AuditLog items={audits} />}
         </>}
       </section>
@@ -115,11 +144,11 @@ function Teams({ teams, members, run }: { teams: Team[]; members: Member[]; run:
   </>;
 }
 
-function Scorecards({ items, run }: { items: Scorecard[]; run: (work: () => Promise<unknown>, success: string) => Promise<void> }) {
+function Scorecards({ items, editable, run }: { items: Scorecard[]; editable: boolean; run: (work: () => Promise<unknown>, success: string) => Promise<void> }) {
   const [open, setOpen] = useState(false); const [name, setName] = useState(""); const [criteria, setCriteria] = useState<Criterion[]>([{ label: "", weight: 100 }]); const total = criteria.reduce((sum, item) => sum + Number(item.weight), 0);
   async function create(event: FormEvent) { event.preventDefault(); await run(() => api("/api/v1/admin/scorecards", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, criteria }) }), "چک‌لیست امتیاز ساخته شد"); setOpen(false); setName(""); setCriteria([{ label: "", weight: 100 }]); }
-  return <><Header title="KPI و امتیازدهی" description="معیارهای اختصاصی ارزیابی مکالمات فروش" action={<button onClick={() => setOpen(!open)}>＋ چک‌لیست جدید</button>} />{open && <form className="admin-inline-card score-builder" onSubmit={create}><Field label="نام چک‌لیست"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><div className="criteria-list">{criteria.map((item, index) => <div key={index}><input value={item.label} onChange={(event) => setCriteria(criteria.map((row, rowIndex) => rowIndex === index ? { ...row, label: event.target.value } : row))} placeholder="نام معیار" required /><input type="number" min="1" max="100" value={item.weight} onChange={(event) => setCriteria(criteria.map((row, rowIndex) => rowIndex === index ? { ...row, weight: Number(event.target.value) } : row))} /><span>٪</span>{criteria.length > 1 && <button type="button" className="icon-danger" onClick={() => setCriteria(criteria.filter((_, rowIndex) => rowIndex !== index))}>×</button>}</div>)}</div><div className={`weight-summary ${total === 100 ? "valid" : "invalid"}`}><span>مجموع وزن‌ها</span><strong>{fa(total)}٪</strong></div><div className="form-actions"><button type="button" className="admin-secondary" onClick={() => setCriteria([...criteria, { label: "", weight: 0 }])}>افزودن معیار</button><button disabled={total !== 100}>ذخیره چک‌لیست</button></div></form>}
-    <div className="admin-stack">{items.map((item) => <article className="admin-row-card" key={item.id}><div><span className={item.active ? "status-good" : "status-muted"}>{item.active ? "فعال" : "نسخه ذخیره‌شده"}</span><h3>{item.name}</h3><p>{fa(item.criteria.length)} معیار · مجموع وزن {fa(item.criteria.reduce((sum, criterion) => sum + Number(criterion.weight), 0))}٪</p></div><div className="criteria-chips">{item.criteria.slice(0, 4).map((criterion) => <span key={criterion.label}>{criterion.label} {fa(criterion.weight)}٪</span>)}</div>{!item.active && <button onClick={() => void run(() => api(`/api/v1/admin/scorecards/${item.id}/activate`, { method: "POST" }), "چک‌لیست فعال شد")}>فعال‌سازی</button>}</article>)}{items.length === 0 && <AdminEmpty text="هنوز چک‌لیست امتیازی ساخته نشده است" />}</div>
+  return <><Header title="KPI و امتیازدهی" description={editable ? "معیارهای اختصاصی ارزیابی مکالمات فروش" : "مشاهده نسخه فعال؛ ساخت و فعال‌سازی فقط در اختیار مدیر سامانه است."} action={editable ? <button onClick={() => setOpen(!open)}>＋ چک‌لیست جدید</button> : undefined} />{open && editable && <form className="admin-inline-card score-builder" onSubmit={create}><Field label="نام چک‌لیست"><input value={name} onChange={(event) => setName(event.target.value)} required /></Field><div className="criteria-list">{criteria.map((item, index) => <div key={index}><input value={item.label} onChange={(event) => setCriteria(criteria.map((row, rowIndex) => rowIndex === index ? { ...row, label: event.target.value } : row))} placeholder="نام معیار" required /><input type="number" min="1" max="100" value={item.weight} onChange={(event) => setCriteria(criteria.map((row, rowIndex) => rowIndex === index ? { ...row, weight: Number(event.target.value) } : row))} /><span>٪</span>{criteria.length > 1 && <button type="button" className="icon-danger" onClick={() => setCriteria(criteria.filter((_, rowIndex) => rowIndex !== index))}>×</button>}</div>)}</div><div className={`weight-summary ${total === 100 ? "valid" : "invalid"}`}><span>مجموع وزن‌ها</span><strong>{fa(total)}٪</strong></div><div className="form-actions"><button type="button" className="admin-secondary" onClick={() => setCriteria([...criteria, { label: "", weight: 0 }])}>افزودن معیار</button><button disabled={total !== 100}>ذخیره چک‌لیست</button></div></form>}
+    <div className="admin-stack">{items.map((item) => <article className="admin-row-card" key={item.id}><div><span className={item.active ? "status-good" : "status-muted"}>{item.active ? "فعال" : "نسخه ذخیره‌شده"}</span><h3>{item.name}</h3><p>{fa(item.criteria.length)} معیار · مجموع وزن {fa(item.criteria.reduce((sum, criterion) => sum + Number(criterion.weight), 0))}٪</p></div><div className="criteria-chips">{item.criteria.slice(0, 4).map((criterion) => <span key={criterion.label}>{criterion.label} {fa(criterion.weight)}٪</span>)}</div>{editable && !item.active && <button onClick={() => void run(() => api(`/api/v1/admin/scorecards/${item.id}/activate`, { method: "POST" }), "چک‌لیست فعال شد")}>فعال‌سازی</button>}</article>)}{items.length === 0 && <AdminEmpty text="هنوز چک‌لیست امتیازی ساخته نشده است" />}</div>
   </>;
 }
 
@@ -132,8 +161,74 @@ function Automations({ items, run }: { items: Automation[]; run: (work: () => Pr
 
 function Integrations({ items, run }: { items: Integration[]; run: (work: () => Promise<unknown>, success: string) => Promise<void> }) {
   const [open, setOpen] = useState(false); async function add(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); await run(() => api("/api/v1/admin/integrations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(values) }), "اتصال ذخیره شد"); setOpen(false); }
-  return <><Header title="اتصال‌ها" description="ارتباط امن با سرویس‌های فروش و پیام‌رسانی" action={<button onClick={() => setOpen(!open)}>＋ اتصال جدید</button>} />{open && <form className="admin-form-grid admin-inline-card" onSubmit={add}><Field label="نام اتصال"><input name="name" required /></Field><Field label="نوع"><select name="kind"><option value="crm">CRM عمومی</option><option value="webhook">Webhook</option><option value="telephony">تلفن</option><option value="sms">پیامک</option><option value="email">ایمیل</option><option value="whatsapp">واتساپ</option><option value="api">API</option></select></Field><button>ذخیره اتصال</button></form>}
-    <div className="admin-card-grid integrations-grid">{items.map((item) => <article className="admin-team-card" key={item.id}><header><i>⌁</i><span className={item.status === "active" ? "status-good" : "status-muted"}>{item.status === "active" ? "فعال" : "غیرفعال"}</span></header><h3>{item.name}</h3><p>{item.kind}</p><footer><Toggle checked={item.status === "active"} label={item.status === "active" ? "متصل" : "قطع"} onChange={(active) => void run(() => api(`/api/v1/admin/integrations/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: active ? "active" : "inactive" }) }), "وضعیت اتصال تغییر کرد")} /></footer></article>)}{items.length === 0 && <AdminEmpty text="هنوز اتصالی تعریف نشده است" />}</div>
+  return <><Header title="اتصال‌ها" description="تعریف اتصال با اتصال اجرایی فرق دارد؛ فقط Connector تست‌شده می‌تواند فعال شود." action={<button onClick={() => setOpen(!open)}>＋ تعریف اتصال</button>} />{open && <form className="admin-form-grid admin-inline-card" onSubmit={add}><Field label="نام اتصال"><input name="name" required /></Field><Field label="نوع"><select name="kind"><option value="crm">CRM عمومی</option><option value="webhook">Webhook</option><option value="telephony">تلفن</option><option value="sms">پیامک</option><option value="email">ایمیل</option><option value="whatsapp">واتساپ</option><option value="api">API</option></select></Field><button>ذخیره تعریف</button></form>}
+    <div className="admin-card-grid integrations-grid">{items.map((item) => <article className="admin-team-card" key={item.id}><header><i>⌁</i><span className={item.status === "active" && item.operational !== false ? "status-good" : "status-muted"}>{item.status === "active" && item.operational !== false ? "متصل" : "تعریف‌شده"}</span></header><h3>{item.name}</h3><p>{item.kind}</p>{item.limitation && <small className="integration-limitation">{item.limitation}</small>}<footer>{item.can_activate === false || item.operational === false ? <button disabled title={item.limitation}>فعال‌سازی غیرفعال</button> : <Toggle checked={item.status === "active"} label={item.status === "active" ? "متصل" : "قطع"} onChange={(active) => void run(() => api(`/api/v1/admin/integrations/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: active ? "active" : "inactive" }) }), "وضعیت اتصال تغییر کرد")} />}</footer></article>)}{items.length === 0 && <AdminEmpty text="هنوز اتصالی تعریف نشده است" />}</div>
+  </>;
+}
+
+function ProcessingOperations({ data, run }: { data: OperationsData; run: (work: () => Promise<unknown>, success: string) => Promise<void> }) {
+  const [status, setStatus] = useState("all");
+  const visible = data.items.filter((item) => status === "all" || item.status === status);
+  async function action(item: ProcessingOperation, name: string, label: string) {
+    if (["retry", "full_reprocess", "quarantine"].includes(name) && !window.confirm(label + " برای فایل «" + (item.source_file ?? item.file_name ?? item.id) + "» انجام شود؟")) return;
+    await run(() => api("/api/v1/admin/processing-operations/" + encodeURIComponent(item.id) + "/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: name }) }), label + " انجام شد");
+  }
+  return <><Header title="Processing Operations" description="خطاها، Retry و قرنطینه فایل‌های پردازش" />
+    {data.limitation && <div className="admin-capability-note"><strong>محدودیت محیط فعلی</strong><span>{data.limitation}</span></div>}
+    <div className="admin-toolbar"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">همه وضعیت‌ها</option><option value="failed">ناموفق</option><option value="retry_scheduled">Retry زمان‌بندی‌شده</option><option value="quarantined">قرنطینه</option></select><span>{fa(visible.length)} مورد</span></div>
+    <div className="admin-table-wrap"><table className="admin-table operations-table"><thead><tr><th>فایل / تماس</th><th>مرحله و نوع خطا</th><th>پیام امن</th><th>Retry</th><th>زمان</th><th>Worker / Correlation</th><th>اقدامات</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><strong>{item.source_file ?? item.file_name ?? item.id}</strong><small>{item.status}</small></td><td>{item.failed_stage || item.stage || "نامشخص"}<small>{item.error_type || item.error_code || "unknown"}</small></td><td className="safe-error">{item.safe_message || item.error_message || "پیامی ثبت نشده است"}</td><td>{fa(item.retry_count ?? 0)}<small>{item.next_retry_at ? "بعدی: " + date(item.next_retry_at) : "زمان‌بندی نشده"}</small></td><td>{date(item.created_at ?? item.updated_at)}<small>{item.last_retry_at ? "آخرین: " + date(item.last_retry_at) : ""}</small></td><td>{item.worker || "—"}<small dir="ltr">{item.correlation_id || "—"}</small></td><td><div className="operation-actions">
+      <button disabled={item.can_retry === false || data.capabilities?.retry === false} title={item.can_retry === false ? "Worker پردازش متصل نیست" : ""} onClick={() => void action(item, "retry", "Retry مرحله شکست‌خورده")}>Retry مرحله</button>
+      <button disabled={item.can_retry === false || data.capabilities?.retry === false} onClick={() => void action(item, "full_reprocess", "Retry کل pipeline")}>Retry کامل</button>
+      {item.can_quarantine !== false && item.status !== "quarantined" && <button onClick={() => void action(item, "quarantine", "قرنطینه")}>قرنطینه</button>}
+      {item.can_restore && <button onClick={() => void action(item, "restore", "بازگردانی از قرنطینه")}>بازگردانی</button>}
+      <button className="admin-secondary" onClick={() => void action(item, "resolve_error", "رفع‌شده علامت‌زدن خطا")}>رفع خطا</button>
+      {item.can_download_diagnostics && data.capabilities?.diagnostics !== false && <a href={"/api/v1/admin/processing-operations/" + encodeURIComponent(item.id) + "/diagnostics"}>بسته تشخیصی</a>}
+    </div></td></tr>)}</tbody></table>{visible.length === 0 && <AdminEmpty text="خطای پردازشی در این وضعیت وجود ندارد" />}</div>
+  </>;
+}
+
+function AccuracyPanel({ data }: { data: Accuracy }) {
+  return <><Header title="دقت رونویسی فارسی" description="نتیجه فقط از اجرای دیتاست ارزیابی ثبت‌شده نمایش داده می‌شود." />
+    {!data.measured ? <div className="accuracy-unmeasured"><i>!</i><div><h3>دقت هنوز اندازه‌گیری نشده است</h3><p>{data.message ?? "تا زمان اجرای ارزیابی روی تماس‌های واقعی فارسی، هیچ ادعای ۸۵٪ یا عدد دیگری نمایش داده نمی‌شود."}</p></div></div> : <div className="admin-metrics"><Metric icon="W" label="WER" value={data.wer == null ? "—" : fa((data.wer * 100).toFixed(1)) + "٪"} hint="نرخ خطای واژه" /><Metric icon="C" label="CER" value={data.cer == null ? "—" : fa((data.cer * 100).toFixed(1)) + "٪"} hint="نرخ خطای نویسه" /><Metric icon="#" label="نمونه‌ها" value={data.sample_count ?? 0} hint={data.dataset ?? "دیتاست ثبت‌شده"} /><Metric icon="◷" label="آخرین ارزیابی" value={data.evaluated_at ? date(data.evaluated_at) : "—"} hint="زمان ثبت گزارش" /></div>}
+    <section className="admin-card"><h3>معیار پذیرش</h3><p>برای ادعای کیفیت پایلوت، گزارش WER/CER، دقت عددها و موجودیت‌ها باید از تماس‌های واقعی و غیرحساس شرکت تولید شود. داده نمونه صرفاً سلامت ابزار ارزیابی را می‌سنجد.</p></section>
+  </>;
+}
+
+function GlossaryPanel({ items, editable, run }: { items: Glossary[]; editable: boolean; run: (work: () => Promise<unknown>, success: string) => Promise<void> }) {
+  const [term, setTerm] = useState(""); const [category, setCategory] = useState("product"); const [aliases, setAliases] = useState(""); const [query, setQuery] = useState("");
+  const labels: Record<string, string> = { product: "محصول", brand: "برند", company: "شرکت", medical: "پزشکی", sales: "فروش", city: "شهر", employee: "کارکنان", other: "سایر" };
+  const visible = items.filter((item) => (item.term + " " + (item.aliases ?? []).join(" ")).toLocaleLowerCase("fa").includes(query.toLocaleLowerCase("fa")));
+  async function add(event: FormEvent) {
+    event.preventDefault(); await run(() => api("/api/v1/admin/glossary", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ term, category, aliases: aliases.split(",").map((value) => value.trim()).filter(Boolean) }) }), "واژه به فرهنگ اختصاصی اضافه شد");
+    setTerm(""); setAliases("");
+  }
+  return <><Header title="واژه‌نامه اختصاصی" description="واژه‌های تخصصی برای نرمال‌سازی رونویسی و تحلیل" />
+    {editable ? <form className="admin-form-grid admin-inline-card" onSubmit={add}><Field label="واژه اصلی"><input value={term} onChange={(event) => setTerm(event.target.value)} minLength={2} required /></Field><Field label="دسته"><select value={category} onChange={(event) => setCategory(event.target.value)}>{Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field><Field label="نام‌های جایگزین (با ویرگول)"><input value={aliases} onChange={(event) => setAliases(event.target.value)} /></Field><button>افزودن واژه</button></form> : <div className="admin-capability-note"><strong>دسترسی فقط‌خواندنی</strong><span>تغییر واژه‌نامه فقط برای مدیر و مدیر فروش مجاز است.</span></div>}
+    <div className="admin-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="جست‌وجوی واژه یا نام جایگزین" /><span>{fa(visible.length)} واژه</span></div>
+    <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>واژه</th><th>دسته</th><th>نام‌های جایگزین</th><th>وضعیت</th>{editable && <th />}</tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><strong>{item.term}</strong></td><td>{labels[item.category] ?? item.category}</td><td>{item.aliases?.join("، ") || "—"}</td><td>{editable ? <Toggle checked={Boolean(item.active)} label={item.active ? "فعال" : "غیرفعال"} onChange={(active) => void run(() => api("/api/v1/admin/glossary/" + encodeURIComponent(item.id), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ active }) }), "وضعیت واژه تغییر کرد")} /> : item.active ? "فعال" : "غیرفعال"}</td>{editable && <td><button className="icon-danger" onClick={() => { if (window.confirm("این واژه حذف شود؟")) void run(() => api("/api/v1/admin/glossary/" + encodeURIComponent(item.id), { method: "DELETE" }), "واژه حذف شد"); }}>×</button></td>}</tr>)}</tbody></table>{visible.length === 0 && <AdminEmpty text="واژه‌ای پیدا نشد" />}</div>
+  </>;
+}
+
+function IssabelPanel({ settings, run, onToast }: { settings: IssabelSettings; run: (work: () => Promise<unknown>, success: string) => Promise<void>; onToast: (message: string) => void }) {
+  const [form, setForm] = useState(settings);
+  const available = form.watcher_available !== false;
+  const editable = form.editable === true;
+  function set<K extends keyof IssabelSettings>(key: K, value: IssabelSettings[K]) { setForm((current) => ({ ...current, [key]: value })); }
+  async function save(event: FormEvent) {
+    event.preventDefault(); await run(() => api("/api/v1/admin/issabel-settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(form) }), available ? "تنظیمات Issabel ذخیره شد" : "تنظیمات ذخیره شد؛ برای فعال‌سازی Worker را متصل کنید");
+  }
+  async function test() {
+    try { const result = await api<{ ok?: boolean; status?: string; message?: string; error?: string }>("/api/v1/admin/issabel-settings/test", { method: "POST" }); onToast(result.ok === false ? "آزمایش ناموفق: " + (result.error ?? "اتصال برقرار نشد") : result.message ?? "آزمایش اتصال موفق بود"); }
+    catch (cause) { onToast(cause instanceof Error ? cause.message : "آزمایش اتصال ناموفق بود"); }
+  }
+  return <><Header title="دریافت خودکار Issabel / Asterisk" description="پایش خودکار پوشه محلی، پوشه اشتراکی یا SMB mount بدون دخالت روزانه" />
+    <div className={"issabel-health " + (form.watcher_health === "healthy" ? "healthy" : "offline")}><i /><div><strong>{form.watcher_health === "healthy" ? "Watcher سالم و فعال است" : available ? "تنظیمات از Backend خوانده شد" : "Watcher متصل نیست"}</strong><span>{form.limitation ?? (editable ? "وضعیت از health endpoint سرویس Watcher خوانده می‌شود." : "این نصب تنظیمات Issabel را از متغیرهای محیطی سرور می‌خواند؛ ویرایش مرورگری فعال نیست.")}</span></div></div>
+    <form className="admin-settings-form" onSubmit={save}><section className="admin-card"><div className="admin-card-head"><div><h3>روش دریافت</h3><p>رمز SFTP و کلید خصوصی فقط از متغیر امن سرور خوانده می‌شوند و در مرورگر ذخیره نمی‌شوند.</p></div><span className={form.enabled ? "status-good" : "status-muted"}>{form.enabled ? "فعال" : "غیرفعال"}</span></div>
+      <div className="admin-form-grid"><Field label="روش import"><select value={form.import_mode} onChange={(event) => set("import_mode", event.target.value)}><option value="disabled">غیرفعال</option><option value="folder">پوشه اشتراکی / SMB mount</option><option value="sftp" disabled>SFTP Puller (هنوز عملیاتی نیست)</option></select></Field>
+      {form.import_mode === "folder" && <Field label="مسیر فایل‌های ضبط"><input dir="ltr" value={form.recordings_path ?? ""} onChange={(event) => set("recordings_path", event.target.value)} placeholder="/var/spool/asterisk/monitor" /></Field>}
+      {form.import_mode === "sftp" && <><Field label="میزبان SFTP"><input dir="ltr" value={form.sftp_host ?? ""} onChange={(event) => set("sftp_host", event.target.value)} /></Field><Field label="پورت"><input type="number" min="1" max="65535" value={form.sftp_port ?? 22} onChange={(event) => set("sftp_port", Number(event.target.value))} /></Field><Field label="نام کاربری"><input dir="ltr" value={form.sftp_username ?? ""} onChange={(event) => set("sftp_username", event.target.value)} /></Field><Field label="مسیر راه‌دور"><input dir="ltr" value={form.sftp_remote_path ?? ""} onChange={(event) => set("sftp_remote_path", event.target.value)} /></Field></>}
+      <Field label="فاصله پایش (ثانیه)"><input type="number" min="10" max="3600" value={form.poll_interval} onChange={(event) => set("poll_interval", Number(event.target.value))} /></Field><Field label="زمان پایداری فایل (ثانیه)"><input type="number" min="5" max="600" value={form.file_stability_seconds} onChange={(event) => set("file_stability_seconds", Number(event.target.value))} /></Field><Field label="پسوندهای مجاز"><input dir="ltr" value={form.allowed_extensions} onChange={(event) => set("allowed_extensions", event.target.value)} /></Field><Field label="مسیر قرنطینه"><input dir="ltr" value={form.quarantine_path ?? ""} onChange={(event) => set("quarantine_path", event.target.value)} /></Field><Field label="الگوی نام فایل"><input dir="ltr" value={form.filename_pattern ?? ""} onChange={(event) => set("filename_pattern", event.target.value)} placeholder="regex اختیاری" /></Field></div>
+    </section><div className="form-actions"><button type="button" className="admin-secondary" disabled={!available} title={available ? "" : "برای تست، Backend و Watcher باید اجرا شوند"} onClick={() => void test()}>آزمایش اتصال</button><button disabled={!editable} title={editable ? "" : "این نصب تنظیمات را فقط از متغیرهای محیطی امن می‌خواند"}>ذخیره تنظیمات</button></div></form>
   </>;
 }
 

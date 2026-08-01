@@ -8,19 +8,21 @@ def field(item: Any, name: str, default=None):
 
 def normalize_segments(raw_segments: list[Any]) -> list[dict]:
     normalized = []
-    for position, item in enumerate(raw_segments):
+    for item in raw_segments:
         text = str(field(item, "text", "")).strip()
         if not text:
             continue
         start = field(item, "start")
         end = field(item, "end")
-        normalized.append({
-            "position": position,
-            "speaker": str(field(item, "speaker", "unknown")),
-            "text": text,
-            "start": float(start) if start is not None else None,
-            "end": float(end) if end is not None else None,
-        })
+        normalized.append(
+            {
+                "position": len(normalized),
+                "speaker": str(field(item, "speaker", "unknown")),
+                "text": text,
+                "start": float(start) if start is not None else None,
+                "end": float(end) if end is not None else None,
+            }
+        )
     return normalized
 
 
@@ -62,7 +64,9 @@ def calculate_metrics(segments: list[dict]) -> dict:
             speaker: {
                 "turn_count": turns[speaker],
                 "talk_seconds": round(talk_seconds[speaker], 1) if talk_seconds[speaker] else None,
-                "talk_share_percent": round(talk_seconds[speaker] / total_talk * 100, 1) if total_talk else None,
+                "talk_share_percent": round(talk_seconds[speaker] / total_talk * 100, 1)
+                if total_talk
+                else None,
                 "longest_turn_seconds": round(longest[speaker], 1) if longest[speaker] else None,
                 "explicit_question_marks": explicit_questions[speaker],
             }
@@ -75,5 +79,7 @@ def transcript_text(segments: list[dict]) -> str:
     lines = []
     for segment in segments:
         timestamp = f"[{segment['start']:.1f}s] " if segment["start"] is not None else ""
-        lines.append(f"{timestamp}{segment['speaker']}: {segment['text']}")
+        lines.append(
+            f"{timestamp}{segment['speaker']}: {segment.get('normalized_text') or segment['text']}"
+        )
     return "\n".join(lines)

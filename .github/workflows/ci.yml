@@ -1,0 +1,69 @@
+name: pilot-quality-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+      - name: Install backend and test tools
+        run: python -m pip install --disable-pip-version-check -e './backend[dev]'
+      - name: Static analysis
+        run: |
+          python -m ruff check backend
+          python -m ruff format --check backend
+      - name: Backend tests
+        run: python -m pytest backend/tests -ra
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+
+  operational-tooling:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test tools
+        run: python -m pip install --disable-pip-version-check pytest ruff
+      - name: Static analysis
+        run: |
+          python -m ruff check evaluation scripts load-tests
+          python -m ruff format --check evaluation scripts load-tests
+      - name: Compile operational tools
+        run: python -m compileall -q evaluation scripts load-tests
+      - name: Operational tooling tests
+        run: python -m pytest evaluation/tests scripts/tests load-tests/tests -q

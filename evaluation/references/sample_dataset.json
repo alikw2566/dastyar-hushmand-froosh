@@ -1,0 +1,43 @@
+{
+  "name": "non-sensitive-evaluator-smoke-samples",
+  "version": "1.0",
+  "contains_real_calls": false,
+  "samples": [
+    {
+      "id": "synthetic-fa-sales-001",
+      "audio_path": null,
+      "reference_text": "سلام، من سارا از شرکت سپهر هستم. قیمت محصول آلفا ۱۲ میلیون تومان است و سه‌شنبه تماس می‌گیریم.",
+      "hypothesis_text": "سلام من سارا از شرکت سپهر هستم قیمت محصول آلفا دوازده میلیون تومان است و سه شنبه تماس می گیریم",
+      "reference_entities": {
+        "person": ["سارا"],
+        "company": ["شرکت سپهر"],
+        "product": ["محصول آلفا"]
+      },
+      "predicted_entities": {
+        "person": ["سارا"],
+        "company": ["شرکت سپهر"],
+        "product": ["محصول آلفا"]
+      },
+      "reference_numbers": ["۱۲"],
+      "predicted_numbers": [],
+      "reference_segments": [
+        {"start": 0.0, "end": 4.0, "text": "سلام من سارا از شرکت سپهر هستم"},
+        {"start": 4.2, "end": 10.0, "text": "قیمت محصول آلفا ۱۲ میلیون تومان است و سه‌شنبه تماس می‌گیریم"}
+      ],
+      "predicted_segments": [
+        {"start": 0.1, "end": 4.2, "text": "سلام من سارا از شرکت سپهر هستم"},
+        {"start": 4.4, "end": 10.4, "text": "قیمت محصول آلفا دوازده میلیون تومان است و سه شنبه تماس می گیریم"}
+      ]
+    },
+    {
+      "id": "synthetic-fa-code-switch-002",
+      "audio_path": null,
+      "reference_text": "اطلاعات مشتری را در CRM ثبت کردم و کد پیگیری ۴۵۷ است.",
+      "hypothesis_text": "اطلاعات مشتری را در سی آر ام ثبت کردم و کد پیگیری ۴۵۷ است",
+      "reference_entities": {"technical_term": ["CRM"]},
+      "predicted_entities": {"technical_term": ["سی آر ام"]},
+      "reference_numbers": ["۴۵۷"],
+      "predicted_numbers": ["457"]
+    }
+  ]
+}

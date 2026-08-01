@@ -20,7 +20,7 @@ export default async function Home() {
       currentUser={{
         name: user.displayName,
         email: user.email,
-        role: user.role ?? "کاربر",
+        role: user.role ?? "مشاهده‌گر",
       }}
     />
   );

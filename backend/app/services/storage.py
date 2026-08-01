@@ -29,7 +29,9 @@ class ObjectStorage:
 
         await asyncio.to_thread(ensure)
 
-    async def upload(self, tenant_id: UUID, call_id: UUID, file_name: str, content_type: str, body) -> str:
+    async def upload(
+        self, tenant_id: UUID, call_id: UUID, file_name: str, content_type: str, body
+    ) -> str:
         safe_name = "".join(char if char.isalnum() or char in "._-" else "_" for char in file_name)
         key = f"{tenant_id}/{call_id}/{safe_name}"
         await asyncio.to_thread(
@@ -37,7 +39,10 @@ class ObjectStorage:
             body,
             self.bucket,
             key,
-            ExtraArgs={"ContentType": content_type, "Metadata": {"tenant-id": str(tenant_id), "call-id": str(call_id)}},
+            ExtraArgs={
+                "ContentType": content_type,
+                "Metadata": {"tenant-id": str(tenant_id), "call-id": str(call_id)},
+            },
         )
         return key
 

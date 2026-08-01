@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const organizations = sqliteTable("organizations", {
   id: text("id").primaryKey(),
@@ -26,23 +26,55 @@ export const calls = sqliteTable("calls", {
   organizationId: text("organization_id").notNull().references(() => organizations.id),
   externalId: text("external_id"),
   customerName: text("customer_name").notNull().default("در انتظار استخراج"),
+  companyName: text("company_name"),
+  phoneNumber: text("phone_number"),
+  city: text("city"),
+  province: text("province"),
   sellerName: text("seller_name").notNull().default("در انتظار تشخیص"),
+  sellerEmail: text("seller_email"),
+  productName: text("product_name"),
+  productCategory: text("product_category"),
+  salesStage: text("sales_stage"),
+  leadTemperature: text("lead_temperature"),
   originalFileName: text("original_file_name").notNull(),
   objectKey: text("object_key").notNull(),
   mimeType: text("mime_type").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
   source: text("source", { enum: ["upload", "api", "telephony"] }).notNull().default("upload"),
-  status: text("status", { enum: ["received", "uploaded", "queued", "transcribing", "analyzing", "review_needed", "completed", "failed"] }).notNull().default("queued"),
+  status: text("status").notNull().default("queued"),
   outcome: text("outcome", { enum: ["won", "lost", "follow_up", "unknown"] }).notNull().default("unknown"),
   outcomeConfirmed: integer("outcome_confirmed", { mode: "boolean" }).notNull().default(false),
   durationSeconds: real("duration_seconds"),
+  direction: text("direction"),
   score: real("score"),
+  sentiment: text("sentiment"),
+  riskFlagsJson: text("risk_flags_json", { mode: "json" }).$type<string[]>(),
+  followupRequired: integer("followup_required", { mode: "boolean" }).notNull().default(false),
+  followupAt: text("followup_at"),
+  hasManualCorrection: integer("has_manual_correction", { mode: "boolean" }).notNull().default(false),
   analysisVersion: text("analysis_version"),
   analysisJson: text("analysis_json", { mode: "json" }).$type<Record<string, unknown>>(),
   errorMessage: text("error_message"),
+  errorType: text("error_type"),
+  failedStage: text("failed_stage"),
+  retryCount: integer("retry_count").notNull().default(0),
+  lastRetryAt: text("last_retry_at"),
+  nextRetryAt: text("next_retry_at"),
+  worker: text("worker"),
+  correlationId: text("correlation_id"),
+  sourcePath: text("source_path"),
+  fileHash: text("file_hash"),
+  detectedAt: text("detected_at"),
+  importedAt: text("imported_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [uniqueIndex("calls_org_external_idx").on(table.organizationId, table.externalId)]);
+}, (table) => [
+  uniqueIndex("calls_org_external_idx").on(table.organizationId, table.externalId),
+  index("idx_calls_org_created").on(table.organizationId, table.createdAt),
+  index("idx_calls_org_status_created").on(table.organizationId, table.status, table.createdAt),
+  index("idx_calls_org_seller_created").on(table.organizationId, table.sellerEmail, table.createdAt),
+  index("idx_calls_org_followup").on(table.organizationId, table.followupRequired, table.followupAt),
+]);
 
 export const transcriptSegments = sqliteTable("transcript_segments", {
   id: text("id").primaryKey(),
@@ -50,26 +82,101 @@ export const transcriptSegments = sqliteTable("transcript_segments", {
   callId: text("call_id").notNull().references(() => calls.id, { onDelete: "cascade" }),
   position: integer("position").notNull(),
   speakerLabel: text("speaker_label").notNull(),
-  speakerRole: text("speaker_role", { enum: ["seller", "customer", "unknown"] }).notNull().default("unknown"),
+  speakerRole: text("speaker_role", { enum: ["agent", "seller", "customer", "unknown", "other"] }).notNull().default("unknown"),
+  speakerRoleConfidence: real("speaker_role_confidence"),
   startSeconds: real("start_seconds"),
   endSeconds: real("end_seconds"),
   content: text("content").notNull(),
+  normalizedText: text("normalized_text"),
+  isManuallyCorrected: integer("is_manually_corrected", { mode: "boolean" }).notNull().default(false),
+  correctionUserId: text("correction_user_id"),
   editedBy: text("edited_by"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_segments_org_call_position").on(table.organizationId, table.callId, table.position)]);
 
 export const tasks = sqliteTable("tasks", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id").notNull(),
   callId: text("call_id").references(() => calls.id, { onDelete: "set null" }),
   customerName: text("customer_name").notNull(),
+  companyName: text("company_name"),
   title: text("title").notNull(),
   assigneeEmail: text("assignee_email"),
   priority: text("priority", { enum: ["low", "normal", "high", "critical"] }).notNull().default("normal"),
   status: text("status", { enum: ["open", "in_progress", "done", "cancelled"] }).notNull().default("open"),
   dueAt: text("due_at"),
+  reason: text("reason"),
+  completionNote: text("completion_note"),
+  completedAt: text("completed_at"),
+  creationMethod: text("creation_method").notNull().default("manual"),
+  evidenceJson: text("evidence_json", { mode: "json" }).$type<Record<string, unknown>>(),
   aiSuggested: integer("ai_suggested", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_tasks_org_status_due").on(table.organizationId, table.status, table.dueAt)]);
+
+export const processingEvents = sqliteTable("processing_events", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  callId: text("call_id").notNull().references(() => calls.id, { onDelete: "cascade" }),
+  stage: text("stage").notNull(),
+  status: text("status").notNull(),
+  errorType: text("error_type"),
+  safeMessage: text("safe_message"),
+  stackTrace: text("stack_trace"),
+  retryCount: integer("retry_count").notNull().default(0),
+  worker: text("worker"),
+  correlationId: text("correlation_id"),
+  startedAt: text("started_at"),
+  finishedAt: text("finished_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_processing_org_status_created").on(table.organizationId, table.status, table.createdAt),
+  index("idx_processing_org_call_created").on(table.organizationId, table.callId, table.createdAt),
+]);
+
+export const extractionEvidence = sqliteTable("extraction_evidence", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  callId: text("call_id").notNull().references(() => calls.id, { onDelete: "cascade" }),
+  fieldName: text("field_name").notNull(),
+  extractedValue: text("extracted_value"),
+  confidence: real("confidence"),
+  sourceSegmentIdsJson: text("source_segment_ids_json", { mode: "json" }).$type<string[]>(),
+  exactQuote: text("exact_quote"),
+  startSeconds: real("start_seconds"),
+  endSeconds: real("end_seconds"),
+  extractionMethod: text("extraction_method"),
+  validationStatus: text("validation_status").notNull().default("unsupported"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("idx_evidence_org_call").on(table.organizationId, table.callId)]);
+
+export const glossaryEntries = sqliteTable("glossary_entries", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id").notNull(),
+  term: text("term").notNull(),
+  normalizedTerm: text("normalized_term").notNull(),
+  category: text("category").notNull(),
+  aliasesJson: text("aliases_json", { mode: "json" }).$type<string[]>(),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("idx_glossary_org_normalized").on(table.organizationId, table.normalizedTerm, table.category)]);
+
+export const issabelSettings = sqliteTable("issabel_settings", {
+  organizationId: text("organization_id").primaryKey(),
+  importMode: text("import_mode").notNull().default("disabled"),
+  recordingsPath: text("recordings_path"),
+  sftpHost: text("sftp_host"),
+  sftpPort: integer("sftp_port").notNull().default(22),
+  sftpUsername: text("sftp_username"),
+  sftpRemotePath: text("sftp_remote_path"),
+  pollInterval: integer("poll_interval").notNull().default(60),
+  fileStabilitySeconds: integer("file_stability_seconds").notNull().default(15),
+  allowedExtensions: text("allowed_extensions").notNull().default("wav,mp3,gsm"),
+  quarantinePath: text("quarantine_path"),
+  filenamePattern: text("filename_pattern"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const messageDrafts = sqliteTable("message_drafts", {

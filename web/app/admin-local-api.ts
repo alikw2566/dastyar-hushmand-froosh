@@ -1,7 +1,7 @@
 import { createManagedLocalUser, type LocalUser } from "./local-auth";
 
 const reply = (value: unknown, status = 200) => Response.json(value, { status });
-const allowedRoles = ["admin", "supervisor", "seller"];
+const allowedRoles = ["admin", "manager", "supervisor", "agent", "viewer", "seller"];
 const allowedModes = ["draft", "approval", "automatic"];
 
 async function bodyOf(request: Request) {
@@ -14,8 +14,10 @@ async function audit(db: D1Database, user: LocalUser, action: string, entityType
 }
 
 export async function handleLocalAdminApi(request: Request, path: string[], user: LocalUser, db: D1Database): Promise<Response> {
-  if (user.role !== "مدیر") return reply({ error: "insufficient_role" }, 403);
   const resource = path[1] ?? "overview"; const id = path[2]; const action = path[3]; const method = request.method.toUpperCase();
+  const admin = user.role === "مدیر"; const manager = user.role === "مدیر فروش" || user.role === "سرپرست";
+  if (!admin && !manager) return reply({ error: "insufficient_role" }, 403);
+  if (!admin && ["members", "security"].includes(resource)) return reply({ error: "insufficient_role" }, 403);
 
   if (resource === "overview" && method === "GET") {
     const [members, teams, calls, pending, integrations, rules] = await Promise.all([
@@ -100,13 +102,69 @@ export async function handleLocalAdminApi(request: Request, path: string[], user
     const body = await bodyOf(request); const enabled = body.enabled ? 1 : 0; const result = await db.prepare("UPDATE automation_rules SET enabled=? WHERE id=? AND organization_id=?").bind(enabled, id, user.organizationId).run(); if (!result.meta.changes) return reply({ error: "automation_not_found" }, 404); await audit(db, user, "automation.toggled", "automation", id, { enabled }); return reply({ status: "updated" });
   }
 
-  if (resource === "integrations" && !id && method === "GET") { const rows = await db.prepare("SELECT id,name,kind,status,created_at FROM integrations WHERE organization_id=? ORDER BY created_at DESC").bind(user.organizationId).all(); return reply({ items: rows.results }); }
+  if (resource === "integrations" && !id && method === "GET") { const rows = await db.prepare("SELECT id,name,kind,status,created_at FROM integrations WHERE organization_id=? ORDER BY created_at DESC").bind(user.organizationId).all<Record<string, unknown>>(); return reply({ items: rows.results.map((row) => ({ ...row, status: "inactive", operational: false, can_activate: false, limitation: "این تعریف در حالت محلی Connector اجرایی ندارد؛ برای فعال‌سازی Backend را متصل کنید." })) }); }
   if (resource === "integrations" && !id && method === "POST") {
     const body = await bodyOf(request); const name = String(body.name ?? "").trim(); const kind = String(body.kind ?? ""); if (name.length < 2 || !["crm","webhook","sms","email","whatsapp","telephony","api"].includes(kind)) return reply({ error: "invalid_integration" }, 422);
     const integrationId = `int_${crypto.randomUUID()}`; await db.prepare("INSERT INTO integrations (id,organization_id,name,kind,status,config_json) VALUES (?,?,?,?,?,?)").bind(integrationId, user.organizationId, name, kind, "inactive", JSON.stringify(body.config ?? {})).run(); await audit(db, user, "integration.created", "integration", integrationId, { name, kind }); return reply({ id: integrationId }, 201);
   }
   if (resource === "integrations" && id && method === "PATCH") {
-    const body = await bodyOf(request); const status = body.status === "active" ? "active" : "inactive"; const result = await db.prepare("UPDATE integrations SET status=? WHERE id=? AND organization_id=?").bind(status, id, user.organizationId).run(); if (!result.meta.changes) return reply({ error: "integration_not_found" }, 404); await audit(db, user, "integration.toggled", "integration", id, { status }); return reply({ status });
+    const body = await bodyOf(request); if (body.status === "active") return reply({ error: "connector_backend_required", detail: "فعال‌سازی اتصال در حالت محلی ممکن نیست؛ سرویس Connector را متصل کنید." }, 501);
+    const result = await db.prepare("UPDATE integrations SET status='inactive' WHERE id=? AND organization_id=?").bind(id, user.organizationId).run(); if (!result.meta.changes) return reply({ error: "integration_not_found" }, 404); await audit(db, user, "integration.toggled", "integration", id, { status: "inactive" }); return reply({ status: "inactive" });
+  }
+
+  if (resource === "accuracy" && method === "GET") {
+    return reply({ measured: false, wer: null, cer: null, sample_count: 0, evaluated_at: null, dataset: null, message: "دقت هنوز با دیتاست تماس‌های واقعی فارسی اندازه‌گیری نشده است." });
+  }
+
+  if (resource === "glossary" && !id && method === "GET") {
+    const rows = await db.prepare("SELECT id,term,category,aliases_json,active,created_at FROM glossary_entries WHERE organization_id=? ORDER BY active DESC,category,term").bind(user.organizationId).all<Record<string, unknown>>();
+    return reply({ items: rows.results.map((row) => ({ ...row, aliases: parseArray(row.aliases_json) })) });
+  }
+  if (resource === "glossary" && !id && method === "POST") {
+    const body = await bodyOf(request); const term = String(body.term ?? "").trim(); const category = String(body.category ?? "sales").trim();
+    if (term.length < 2 || !["product","brand","company","medical","sales","city","employee","other"].includes(category)) return reply({ error: "invalid_glossary_entry" }, 422);
+    const aliases = Array.isArray(body.aliases) ? body.aliases.map(String).map((value) => value.trim()).filter(Boolean) : String(body.aliases ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    const entryId = `gls_${crypto.randomUUID()}`;
+    try { await db.prepare("INSERT INTO glossary_entries (id,organization_id,term,normalized_term,category,aliases_json) VALUES (?,?,?,?,?,?)").bind(entryId, user.organizationId, term, normalizePersian(term), category, JSON.stringify(aliases)).run(); }
+    catch { return reply({ error: "glossary_entry_exists" }, 409); }
+    await audit(db, user, "glossary.created", "glossary", entryId, { term, category }); return reply({ id: entryId }, 201);
+  }
+  if (resource === "glossary" && id && method === "PATCH") {
+    const body = await bodyOf(request); const active = body.active ? 1 : 0; const result = await db.prepare("UPDATE glossary_entries SET active=? WHERE id=? AND organization_id=?").bind(active, id, user.organizationId).run();
+    if (!result.meta.changes) return reply({ error: "glossary_entry_not_found" }, 404); await audit(db, user, "glossary.updated", "glossary", id, { active }); return reply({ status: "updated" });
+  }
+  if (resource === "glossary" && id && method === "DELETE") {
+    const result = await db.prepare("DELETE FROM glossary_entries WHERE id=? AND organization_id=?").bind(id, user.organizationId).run(); if (!result.meta.changes) return reply({ error: "glossary_entry_not_found" }, 404); await audit(db, user, "glossary.deleted", "glossary", id); return reply({ status: "deleted" });
+  }
+
+  if (resource === "issabel-settings" && !id && method === "GET") {
+    const row = await db.prepare("SELECT * FROM issabel_settings WHERE organization_id=?").bind(user.organizationId).first<Record<string, unknown>>();
+    const limitation = "Watcher فقط با Backend/Docker قابل اجرا است؛ تنظیمات در D1 ذخیره می‌شود اما این محیط فایل Issabel را نمی‌خواند.";
+    return reply(row ? { ...row, editable: true, watcher_available: false, watcher_health: "not_connected", limitation } : { organization_id: user.organizationId, import_mode: "disabled", recordings_path: "", sftp_host: "", sftp_port: 22, sftp_username: "", sftp_remote_path: "", poll_interval: 60, file_stability_seconds: 15, allowed_extensions: "wav,mp3,gsm", quarantine_path: "", filename_pattern: "", enabled: 0, editable: true, watcher_available: false, watcher_health: "not_connected", limitation });
+  }
+  if (resource === "issabel-settings" && !id && method === "PATCH") {
+    const body = await bodyOf(request); const mode = ["disabled","folder","sftp"].includes(String(body.import_mode)) ? String(body.import_mode) : "disabled";
+    const poll = Math.min(3600, Math.max(10, Number(body.poll_interval) || 60)); const stability = Math.min(600, Math.max(5, Number(body.file_stability_seconds) || 15));
+    await db.prepare(`INSERT INTO issabel_settings (organization_id,import_mode,recordings_path,sftp_host,sftp_port,sftp_username,sftp_remote_path,poll_interval,file_stability_seconds,allowed_extensions,quarantine_path,filename_pattern,enabled,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id) DO UPDATE SET import_mode=excluded.import_mode,recordings_path=excluded.recordings_path,sftp_host=excluded.sftp_host,sftp_port=excluded.sftp_port,sftp_username=excluded.sftp_username,sftp_remote_path=excluded.sftp_remote_path,poll_interval=excluded.poll_interval,file_stability_seconds=excluded.file_stability_seconds,allowed_extensions=excluded.allowed_extensions,quarantine_path=excluded.quarantine_path,filename_pattern=excluded.filename_pattern,enabled=excluded.enabled,updated_at=excluded.updated_at`)
+      .bind(user.organizationId, mode, String(body.recordings_path ?? ""), String(body.sftp_host ?? ""), Number(body.sftp_port) || 22, String(body.sftp_username ?? ""), String(body.sftp_remote_path ?? ""), poll, stability, String(body.allowed_extensions ?? "wav,mp3,gsm"), String(body.quarantine_path ?? ""), String(body.filename_pattern ?? ""), 0, new Date().toISOString()).run();
+    await audit(db, user, "issabel.settings.updated", "issabel", user.organizationId, { import_mode: mode, poll_interval: poll });
+    return reply({ status: "saved", enabled: false, warning: "تنظیمات ذخیره شد؛ فعال‌سازی Watcher به Backend نیاز دارد." });
+  }
+  if (resource === "issabel-settings" && id === "test" && method === "POST") return reply({ error: "watcher_backend_required", detail: "تست اتصال Issabel در حالت محلی در دسترس نیست؛ Backend/Docker را اجرا کنید." }, 501);
+
+  if (resource === "processing-operations" && !id && method === "GET") {
+    const rows = await db.prepare(`SELECT id,original_file_name AS source_file,status,failed_stage,error_type,error_message AS safe_message,retry_count,last_retry_at,next_retry_at,duration_seconds,created_at,worker,correlation_id
+      FROM calls WHERE organization_id=? AND (status IN ('failed','retry_scheduled','quarantined') OR error_message IS NOT NULL) ORDER BY created_at DESC LIMIT 200`).bind(user.organizationId).all<Record<string, unknown>>();
+    return reply({ items: rows.results.map((row) => ({ ...row, can_retry: false, can_quarantine: row.status !== "quarantined", can_restore: row.status === "quarantined", can_download_diagnostics: false })), capabilities: { retry: false, diagnostics: false, quarantine: true }, limitation: "Retry و بسته تشخیصی به Worker پردازش نیاز دارند؛ قرنطینه در D1 فعال است." });
+  }
+  if (resource === "processing-operations" && id && action && method === "POST") {
+    const body = await bodyOf(request); const requested = action === "actions" ? String(body.action ?? "") : action;
+    if (["retry","reanalyze","full_reprocess","cancel","diagnostics"].includes(requested)) return reply({ error: "processing_backend_required", detail: "این اقدام به Worker پردازش متصل نیاز دارد." }, 501);
+    const status = requested === "quarantine" ? "quarantined" : requested === "restore" ? "failed" : requested === "resolve_error" ? "ignored" : null;
+    if (!status) return reply({ error: "unknown_processing_action" }, 404);
+    const result = await db.prepare("UPDATE calls SET status=?,updated_at=? WHERE id=? AND organization_id=?").bind(status, new Date().toISOString(), id, user.organizationId).run(); if (!result.meta.changes) return reply({ error: "call_not_found" }, 404);
+    await audit(db, user, `processing.${requested}`, "call", id); return reply({ status });
   }
 
   if (resource === "ai-settings" && method === "GET") { const row = await db.prepare("SELECT * FROM ai_settings WHERE organization_id=?").bind(user.organizationId).first(); return reply(row ?? { organization_id: user.organizationId, provider: "openai", transcription_model: "gpt-4o-transcribe-diarize", analysis_model: "gpt-4o", min_confidence: .75 }); }
@@ -126,3 +184,6 @@ export async function handleLocalAdminApi(request: Request, path: string[], user
   if (resource === "audit-logs" && method === "GET") { const rows = await db.prepare("SELECT id,actor_email,action,entity_type,entity_id,created_at FROM audit_logs WHERE organization_id=? ORDER BY created_at DESC LIMIT 100").bind(user.organizationId).all(); return reply({ items: rows.results }); }
   return reply({ error: "not_found" }, 404);
 }
+
+function normalizePersian(value: string) { return value.replace(/ي/g, "ی").replace(/ك/g, "ک").replace(/[\u200c\s]+/g, " ").trim().toLocaleLowerCase("fa-IR"); }
+function parseArray(value: unknown): string[] { if (typeof value !== "string") return []; try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed.map(String) : []; } catch { return []; } }

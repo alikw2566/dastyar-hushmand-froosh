@@ -2,19 +2,30 @@
   "realm": "mokalemeban",
   "enabled": true,
   "displayName": "مکالمه‌بان",
-  "registrationAllowed": true,
+  "registrationAllowed": false,
   "registrationEmailAsUsername": true,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
-  "resetPasswordAllowed": false,
+  "resetPasswordAllowed": true,
   "rememberMe": true,
   "verifyEmail": false,
-  "passwordPolicy": "length(10) and digits(1)",
+  "passwordPolicy": "length(12) and digits(1) and upperCase(1) and specialChars(1)",
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "accessTokenLifespan": 600,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 28800,
   "roles": {
     "realm": [
       { "name": "admin", "description": "مدیر شرکت" },
+      { "name": "manager", "description": "مدیر فروش" },
       { "name": "supervisor", "description": "سرپرست فروش" },
-      { "name": "seller", "description": "فروشنده" }
+      { "name": "agent", "description": "کارشناس فروش" },
+      { "name": "viewer", "description": "مشاهده‌گر" },
+      { "name": "seller", "description": "نقش قدیمی فروشنده برای سازگاری" }
     ]
   },
   "clients": [
@@ -25,18 +36,18 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:3000/api/auth/callback", "https://*/api/auth/callback"],
-      "webOrigins": ["http://localhost:3000", "+"],
+      "redirectUris": ["http://localhost:3000/api/auth/callback"],
+      "webOrigins": ["http://localhost:3000"],
       "attributes": { "pkce.code.challenge.method": "S256" },
       "protocolMappers": [
         {
           "name": "tenant-id",
           "protocol": "openid-connect",
-          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
           "consentRequired": false,
           "config": {
             "claim.name": "tenant_id",
-            "claim.value": "00000000-0000-4000-8000-000000000001",
+            "user.attribute": "tenant_id",
             "jsonType.label": "String",
             "access.token.claim": "true",
             "id.token.claim": "true"
@@ -62,5 +73,5 @@
       "publicClient": false
     }
   ],
-  "defaultRoles": ["admin"]
+  "defaultRoles": ["viewer"]
 }

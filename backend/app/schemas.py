@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 class Evidence(BaseModel):
     segment_index: int
     timestamp_seconds: float | None = None
+    end_time_seconds: float | None = None
     speaker: str
     quote: str = Field(max_length=220)
 
@@ -43,6 +44,31 @@ class CustomerFacts(BaseModel):
     need: str | None = None
     budget: str | None = None
     product: str | None = None
+    phone: str | None = None
+    alternate_phone: str | None = None
+    address: str | None = None
+    customer_type: str | None = None
+    city: str | None = None
+    province: str | None = None
+    product_category: str | None = None
+    amount: float | None = None
+    exact_amount: float | None = None
+    budget_min: float | None = None
+    budget_max: float | None = None
+    requested_discount: float | None = None
+    quantity: float | None = None
+    unit: str | None = None
+    currency: str | None = None
+    followup_at: datetime | None = None
+    sales_stage: str | None = None
+    lead_temperature: Literal["hot", "warm", "cold", "unknown"] | None = None
+    sentiment: Literal["positive", "neutral", "negative", "mixed", "unknown"] | None = None
+    risk_flag: bool = False
+    competitor_name: str | None = None
+    purchase_timeline: str | None = None
+    lost_reason: str | None = None
+    purchase_probability: float | None = Field(default=None, ge=0, le=1)
+    pain_points: list[str] = Field(default_factory=list)
     commitments: list[str] = Field(default_factory=list)
     buying_signals: list[str] = Field(default_factory=list)
 
@@ -94,6 +120,7 @@ class SalesAnalysis(BaseModel):
     key_moments: list[Evidence]
     next_action: NextAction | None = None
     follow_up_drafts: list[FollowUpDraft] = Field(default_factory=list)
+    field_evidence: dict[str, list[Evidence]] = Field(default_factory=dict)
     limitations: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -119,10 +146,35 @@ class CallRead(BaseModel):
     duration_seconds: float | None
     score: float | None
     created_at: datetime
+    updated_at: datetime
+    call_started_at: datetime | None = None
+    direction: str | None = None
+    caller_number: str | None = None
+    destination_number: str | None = None
+    retry_count: int = 0
+    next_retry_at: datetime | None = None
+    error_code: str | None = None
+    manually_corrected: bool = False
+    company: str | None = None
+    phone: str | None = None
+    city: str | None = None
+    province: str | None = None
+    product: str | None = None
+    product_category: str | None = None
+    sales_stage: str | None = None
+    lead_temperature: str | None = None
+    sentiment: str | None = None
+    risk_flag: bool = False
+    followup_required: bool = False
+    followup_due_at: datetime | None = None
 
 
 class PaginatedCalls(BaseModel):
     items: list[CallRead]
+    page: int = 1
+    page_size: int = 50
+    total: int = 0
+    pages: int = 0
     next_cursor: str | None = None
 
 
@@ -163,19 +215,19 @@ class TaskCreate(BaseModel):
 
 
 class TaskPatch(BaseModel):
-    status: Literal["open", "in_progress", "done", "cancelled"]
+    status: Literal["open", "needs_scheduling", "in_progress", "done", "cancelled"]
 
 
 class MemberCreate(BaseModel):
     full_name: str = Field(min_length=2, max_length=160)
     email: str = Field(pattern=r"^\S+@\S+\.\S+$", max_length=320)
-    role: Literal["admin", "supervisor", "seller"] = "seller"
+    role: Literal["admin", "manager", "supervisor", "agent", "seller", "viewer"] = "agent"
     team_id: UUID | None = None
     password: str = Field(min_length=10, max_length=200)
 
 
 class MemberPatch(BaseModel):
-    role: Literal["admin", "supervisor", "seller"]
+    role: Literal["admin", "manager", "supervisor", "agent", "seller", "viewer"]
     team_id: UUID | None = None
     active: bool = True
 
@@ -218,3 +270,58 @@ class AiSettingsPatch(BaseModel):
 class SecuritySettingsPatch(BaseModel):
     require_consent: bool
     audio_download_enabled: bool
+
+
+class SegmentCorrection(BaseModel):
+    content: str = Field(min_length=1, max_length=20_000)
+    speaker_role: Literal["agent", "seller", "customer", "unknown", "other"]
+    reanalyze: bool = True
+
+
+class SpeakerRoleItem(BaseModel):
+    speaker_id: str = Field(min_length=1, max_length=80)
+    role: Literal["agent", "seller", "customer", "unknown", "other"]
+
+
+class SpeakerRolesPatch(BaseModel):
+    assignments: list[SpeakerRoleItem] = Field(min_length=1, max_length=20)
+    reanalyze: bool = True
+
+
+class ReprocessRequest(BaseModel):
+    mode: Literal["resume", "reanalyze", "full"] = "resume"
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ProcessingAction(BaseModel):
+    action: Literal["retry", "reanalyze", "full_reprocess", "quarantine", "resolve_error"]
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class GlossaryCreate(BaseModel):
+    term: str = Field(min_length=1, max_length=240)
+    category: Literal[
+        "general", "product", "brand", "company", "person", "medical", "sales", "city", "employee"
+    ] = "general"
+    aliases: list[str] = Field(default_factory=list, max_length=50)
+    active: bool = True
+
+
+class GlossaryPatch(BaseModel):
+    term: str | None = Field(default=None, min_length=1, max_length=240)
+    category: (
+        Literal[
+            "general",
+            "product",
+            "brand",
+            "company",
+            "person",
+            "medical",
+            "sales",
+            "city",
+            "employee",
+        ]
+        | None
+    ) = None
+    aliases: list[str] | None = Field(default=None, max_length=50)
+    active: bool | None = None

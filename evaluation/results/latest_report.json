@@ -1,0 +1,204 @@
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-08-01T10:11:57.160465+00:00",
+  "dataset": {
+    "name": "non-sensitive-evaluator-smoke-samples",
+    "version": "1.0",
+    "path": "sample_dataset.json",
+    "contains_real_calls": false,
+    "sample_count": 2
+  },
+  "quality_claim": {
+    "measured": false,
+    "status": "NOT_MEASURED_ON_REAL_CALLS",
+    "note": "Synthetic examples validate the evaluator, not production transcription accuracy."
+  },
+  "aggregate": {
+    "reference_words": 32,
+    "word_errors": 4,
+    "wer": 0.125,
+    "reference_characters": 112,
+    "character_errors": 12,
+    "cer": 0.107143,
+    "entity": {
+      "expected": 4,
+      "predicted": 4,
+      "matched": 3,
+      "precision": 0.75,
+      "recall": 0.75,
+      "f1": 0.75,
+      "accuracy_definition": "exact normalized multiset recall",
+      "accuracy": 0.75
+    },
+    "number": {
+      "expected": 2,
+      "predicted": 1,
+      "matched": 1,
+      "precision": 1.0,
+      "recall": 0.5,
+      "f1": 0.666667,
+      "accuracy_definition": "exact normalized multiset recall",
+      "accuracy": 0.5
+    },
+    "timestamp_accuracy": 1.0
+  },
+  "samples": [
+    {
+      "id": "synthetic-fa-sales-001",
+      "audio_path": null,
+      "audio_exists": null,
+      "reference_words": 20,
+      "hypothesis_words": 20,
+      "word_errors": 1,
+      "wer": 0.05,
+      "reference_characters": 71,
+      "hypothesis_characters": 75,
+      "character_errors": 6,
+      "cer": 0.084507,
+      "operations": {
+        "substitutions": 1,
+        "deletions": 0,
+        "insertions": 0
+      },
+      "error_examples": [
+        {
+          "operation": "substitution",
+          "reference": "12",
+          "hypothesis": "دوازده"
+        }
+      ],
+      "entity": {
+        "overall": {
+          "expected": 3,
+          "predicted": 3,
+          "matched": 3,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "accuracy_definition": "exact normalized multiset recall",
+          "accuracy": 1.0
+        },
+        "by_type": {
+          "company": {
+            "expected": 1,
+            "predicted": 1,
+            "matched": 1,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "accuracy_definition": "exact normalized multiset recall",
+            "accuracy": 1.0
+          },
+          "person": {
+            "expected": 1,
+            "predicted": 1,
+            "matched": 1,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "accuracy_definition": "exact normalized multiset recall",
+            "accuracy": 1.0
+          },
+          "product": {
+            "expected": 1,
+            "predicted": 1,
+            "matched": 1,
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "accuracy_definition": "exact normalized multiset recall",
+            "accuracy": 1.0
+          }
+        }
+      },
+      "number": {
+        "expected": 1,
+        "predicted": 0,
+        "matched": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy_definition": "exact normalized multiset recall",
+        "accuracy": 0.0
+      },
+      "timestamp": {
+        "tolerance_seconds": 0.75,
+        "expected_boundaries": 4,
+        "matched_boundaries": 4,
+        "accuracy": 1.0,
+        "mean_absolute_error_seconds": 0.225,
+        "alignment": "segments are compared by position; use stable segment ordering"
+      }
+    },
+    {
+      "id": "synthetic-fa-code-switch-002",
+      "audio_path": null,
+      "audio_exists": null,
+      "reference_words": 12,
+      "hypothesis_words": 14,
+      "word_errors": 3,
+      "wer": 0.25,
+      "reference_characters": 41,
+      "hypothesis_characters": 44,
+      "character_errors": 6,
+      "cer": 0.146341,
+      "operations": {
+        "substitutions": 1,
+        "deletions": 0,
+        "insertions": 2
+      },
+      "error_examples": [
+        {
+          "operation": "insertion",
+          "reference": null,
+          "hypothesis": "سی"
+        },
+        {
+          "operation": "insertion",
+          "reference": null,
+          "hypothesis": "آر"
+        },
+        {
+          "operation": "substitution",
+          "reference": "crm",
+          "hypothesis": "ام"
+        }
+      ],
+      "entity": {
+        "overall": {
+          "expected": 1,
+          "predicted": 1,
+          "matched": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "accuracy_definition": "exact normalized multiset recall",
+          "accuracy": 0.0
+        },
+        "by_type": {
+          "technical_term": {
+            "expected": 1,
+            "predicted": 1,
+            "matched": 0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "accuracy_definition": "exact normalized multiset recall",
+            "accuracy": 0.0
+          }
+        }
+      },
+      "number": {
+        "expected": 1,
+        "predicted": 1,
+        "matched": 1,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "accuracy_definition": "exact normalized multiset recall",
+        "accuracy": 1.0
+      },
+      "timestamp": null
+    }
+  ]
+}

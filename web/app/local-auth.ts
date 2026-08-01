@@ -89,7 +89,8 @@ export async function getLocalUser(): Promise<LocalUser | null> {
     LEFT JOIN member_profiles p ON p.user_id = u.id
     WHERE s.token_hash = ? AND s.expires_at > ? AND COALESCE(p.active, 1) = 1`).bind(tokenHash, new Date().toISOString()).first<{ id: string; email: string; full_name: string; role: string; organization_id: string; organization_name: string }>();
   if (!row) return null;
-  const role = row.role === "admin" ? "مدیر" : row.role === "supervisor" ? "سرپرست" : "فروشنده";
+  const roleNames: Record<string, string> = { admin: "مدیر", manager: "مدیر فروش", supervisor: "سرپرست", agent: "کارشناس", seller: "فروشنده", viewer: "مشاهده‌گر" };
+  const role = roleNames[row.role] ?? "مشاهده‌گر";
   return { id: row.id, email: row.email, displayName: row.full_name, fullName: row.full_name, role, organizationId: row.organization_id, organizationName: row.organization_name };
 }
 
@@ -100,7 +101,7 @@ export async function createManagedLocalUser(actor: LocalUser, input: { fullName
   if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error("invalid_email");
   if (fullName.length < 2) throw new Error("invalid_profile");
   if (input.password.length < 10 || !/\d/.test(input.password)) throw new Error("weak_password");
-  if (!["admin", "supervisor", "seller"].includes(input.role)) throw new Error("invalid_role");
+  if (!["admin", "manager", "supervisor", "agent", "viewer", "seller"].includes(input.role)) throw new Error("invalid_role");
   if (await database.prepare("SELECT id FROM local_users WHERE email = ?").bind(email).first()) throw new Error("email_exists");
   if (input.teamId && !await database.prepare("SELECT id FROM teams WHERE id = ? AND organization_id = ?").bind(input.teamId, actor.organizationId).first()) throw new Error("team_not_found");
   const userId = `usr_${crypto.randomUUID()}`; const salt = randomToken(16); const passwordHash = await derivePassword(input.password, salt);

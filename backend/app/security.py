@@ -12,7 +12,6 @@ from .config import get_settings
 from .database import SessionFactory
 from .models import Membership, Role
 
-
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -44,7 +43,9 @@ async def current_principal(
             role=Role.admin,
         )
     if not credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication_required")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication_required"
+        )
     try:
         key = jwks_client().get_signing_key_from_jwt(credentials.credentials).key
         claims = jwt.decode(
@@ -57,16 +58,31 @@ async def current_principal(
         tenant_id = UUID(claims["tenant_id"])
         realm_roles = claims.get("realm_access", {}).get("roles", [])
         role_value = claims.get("role") or next(
-            (value for value in ("admin", "supervisor", "seller") if value in realm_roles),
-            "seller",
+            (
+                value
+                for value in ("admin", "manager", "supervisor", "agent", "seller", "viewer")
+                if value in realm_roles
+            ),
+            "viewer",
         )
         role = Role(role_value)
     except (KeyError, ValueError, jwt.PyJWTError) as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token") from exc
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_token"
+        ) from exc
     email = claims.get("email", claims["sub"]).strip().lower()
     async with SessionFactory() as session:
-        await session.execute(text("SELECT set_config('app.tenant_id', :tenant_id, true)"), {"tenant_id": str(tenant_id)})
-        membership = await session.scalar(select(Membership).where(Membership.tenant_id == tenant_id, Membership.email == email, Membership.active.is_(True)))
+        await session.execute(
+            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+            {"tenant_id": str(tenant_id)},
+        )
+        membership = await session.scalar(
+            select(Membership).where(
+                Membership.tenant_id == tenant_id,
+                Membership.email == email,
+                Membership.active.is_(True),
+            )
+        )
         if membership:
             role = membership.role
     return Principal(
