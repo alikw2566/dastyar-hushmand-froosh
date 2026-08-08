@@ -3,6 +3,7 @@ import { createManagedLocalUser, type LocalUser } from "./local-auth";
 const reply = (value: unknown, status = 200) => Response.json(value, { status });
 const allowedRoles = ["admin", "manager", "supervisor", "agent", "viewer", "seller"];
 const allowedModes = ["draft", "approval", "automatic"];
+const allowedAutomationActions = ["task.create", "message.create", "manager.notify"];
 
 async function bodyOf(request: Request) {
   try { return await request.json() as Record<string, unknown>; } catch { return {}; }
@@ -20,15 +21,14 @@ export async function handleLocalAdminApi(request: Request, path: string[], user
   if (!admin && ["members", "security"].includes(resource)) return reply({ error: "insufficient_role" }, 403);
 
   if (resource === "overview" && method === "GET") {
-    const [members, teams, calls, pending, integrations, rules] = await Promise.all([
+    const [members, teams, calls, pending, rules] = await Promise.all([
       db.prepare("SELECT COUNT(*) AS value FROM local_users u LEFT JOIN member_profiles p ON p.user_id=u.id WHERE u.organization_id=? AND COALESCE(p.active,1)=1").bind(user.organizationId).first<{ value: number }>(),
       db.prepare("SELECT COUNT(*) AS value FROM teams WHERE organization_id=? AND active=1").bind(user.organizationId).first<{ value: number }>(),
       db.prepare("SELECT COUNT(*) AS value, COALESCE(SUM(duration_seconds),0) AS seconds, COALESCE(SUM(size_bytes),0) AS bytes FROM calls WHERE organization_id=?").bind(user.organizationId).first<{ value: number; seconds: number; bytes: number }>(),
       db.prepare("SELECT COUNT(*) AS value FROM tasks WHERE organization_id=? AND status NOT IN ('done','cancelled')").bind(user.organizationId).first<{ value: number }>(),
-      db.prepare("SELECT COUNT(*) AS value FROM integrations WHERE organization_id=? AND status='active'").bind(user.organizationId).first<{ value: number }>(),
       db.prepare("SELECT COUNT(*) AS value FROM automation_rules WHERE organization_id=? AND enabled=1").bind(user.organizationId).first<{ value: number }>(),
     ]);
-    return reply({ members: Number(members?.value ?? 0), teams: Number(teams?.value ?? 0), calls: Number(calls?.value ?? 0), used_minutes: Math.round(Number(calls?.seconds ?? 0) / 6) / 10, storage_bytes: Number(calls?.bytes ?? 0), pending_tasks: Number(pending?.value ?? 0), active_integrations: Number(integrations?.value ?? 0), active_rules: Number(rules?.value ?? 0) });
+    return reply({ members: Number(members?.value ?? 0), teams: Number(teams?.value ?? 0), calls: Number(calls?.value ?? 0), used_minutes: Math.round(Number(calls?.seconds ?? 0) / 6) / 10, storage_bytes: Number(calls?.bytes ?? 0), pending_tasks: Number(pending?.value ?? 0), active_rules: Number(rules?.value ?? 0) });
   }
 
   if (resource === "members" && !id && method === "GET") {
@@ -95,21 +95,11 @@ export async function handleLocalAdminApi(request: Request, path: string[], user
 
   if (resource === "automations" && !id && method === "GET") { const rows = await db.prepare("SELECT * FROM automation_rules WHERE organization_id=? ORDER BY created_at DESC").bind(user.organizationId).all(); return reply({ items: rows.results }); }
   if (resource === "automations" && !id && method === "POST") {
-    const body = await bodyOf(request); const name = String(body.name ?? "").trim(); const event = String(body.event ?? ""); const ruleAction = String(body.action ?? ""); const mode = String(body.mode ?? "approval"); if (name.length < 2 || !event || !ruleAction || !allowedModes.includes(mode)) return reply({ error: "invalid_automation" }, 422);
+    const body = await bodyOf(request); const name = String(body.name ?? "").trim(); const event = String(body.event ?? ""); const ruleAction = String(body.action ?? ""); const mode = String(body.mode ?? "approval"); if (name.length < 2 || !event || !allowedAutomationActions.includes(ruleAction) || !allowedModes.includes(mode)) return reply({ error: "invalid_automation" }, 422);
     const ruleId = `rule_${crypto.randomUUID()}`; await db.prepare("INSERT INTO automation_rules (id,organization_id,name,event,action,mode) VALUES (?,?,?,?,?,?)").bind(ruleId, user.organizationId, name, event, ruleAction, mode).run(); await audit(db, user, "automation.created", "automation", ruleId, { name }); return reply({ id: ruleId }, 201);
   }
   if (resource === "automations" && id && method === "PATCH") {
     const body = await bodyOf(request); const enabled = body.enabled ? 1 : 0; const result = await db.prepare("UPDATE automation_rules SET enabled=? WHERE id=? AND organization_id=?").bind(enabled, id, user.organizationId).run(); if (!result.meta.changes) return reply({ error: "automation_not_found" }, 404); await audit(db, user, "automation.toggled", "automation", id, { enabled }); return reply({ status: "updated" });
-  }
-
-  if (resource === "integrations" && !id && method === "GET") { const rows = await db.prepare("SELECT id,name,kind,status,created_at FROM integrations WHERE organization_id=? ORDER BY created_at DESC").bind(user.organizationId).all<Record<string, unknown>>(); return reply({ items: rows.results.map((row) => ({ ...row, status: "inactive", operational: false, can_activate: false, limitation: "این تعریف در حالت محلی Connector اجرایی ندارد؛ برای فعال‌سازی Backend را متصل کنید." })) }); }
-  if (resource === "integrations" && !id && method === "POST") {
-    const body = await bodyOf(request); const name = String(body.name ?? "").trim(); const kind = String(body.kind ?? ""); if (name.length < 2 || !["crm","webhook","sms","email","whatsapp","telephony","api"].includes(kind)) return reply({ error: "invalid_integration" }, 422);
-    const integrationId = `int_${crypto.randomUUID()}`; await db.prepare("INSERT INTO integrations (id,organization_id,name,kind,status,config_json) VALUES (?,?,?,?,?,?)").bind(integrationId, user.organizationId, name, kind, "inactive", JSON.stringify(body.config ?? {})).run(); await audit(db, user, "integration.created", "integration", integrationId, { name, kind }); return reply({ id: integrationId }, 201);
-  }
-  if (resource === "integrations" && id && method === "PATCH") {
-    const body = await bodyOf(request); if (body.status === "active") return reply({ error: "connector_backend_required", detail: "فعال‌سازی اتصال در حالت محلی ممکن نیست؛ سرویس Connector را متصل کنید." }, 501);
-    const result = await db.prepare("UPDATE integrations SET status='inactive' WHERE id=? AND organization_id=?").bind(id, user.organizationId).run(); if (!result.meta.changes) return reply({ error: "integration_not_found" }, 404); await audit(db, user, "integration.toggled", "integration", id, { status: "inactive" }); return reply({ status: "inactive" });
   }
 
   if (resource === "accuracy" && method === "GET") {

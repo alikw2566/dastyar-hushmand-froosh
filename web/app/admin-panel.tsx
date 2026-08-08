@@ -1,40 +1,41 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import type { LucideIcon } from "lucide-react";
+import { Activity, AudioLines, Baseline, BookOpenText, BrainCircuit, Clock3, Gauge, HardDrive, Hash, LayoutDashboard, ScrollText, ShieldCheck, Sparkles, TextCursorInput, Users, UsersRound, Workflow } from "lucide-react";
 
 type Organization = { id: string; name: string; plan: string; monthly_minute_limit: number; retention_days: number; automation_mode: string; used_minutes: number };
-type Overview = { members: number; teams: number; calls: number; used_minutes: number; storage_bytes: number; pending_tasks: number; active_integrations: number; active_rules: number };
+type Overview = { members: number; teams: number; calls: number; used_minutes: number; storage_bytes: number; pending_tasks: number; active_rules: number };
 type Member = { id: string; email: string; full_name: string; role: string; active: number; team_id?: string | null; team_name?: string | null; last_login_at?: string | null };
 type Team = { id: string; name: string; description: string; supervisor_email?: string | null; active: number; member_count: number };
 type Criterion = { label: string; weight: number };
 type Scorecard = { id: string; name: string; criteria: Criterion[]; active: number; created_at: string };
 type Automation = { id: string; name: string; event: string; action: string; mode: string; enabled: number };
-type Integration = { id: string; name: string; kind: string; status: string; operational?: boolean; can_activate?: boolean; limitation?: string };
 type AiSettings = { provider: string; transcription_model: string; analysis_model: string; min_confidence: number };
 type SecuritySettings = { require_consent: number; audio_download_enabled: number };
 type Audit = { id: string; actor_email: string; action: string; entity_type: string; entity_id?: string | null; created_at: string };
 type Accuracy = { measured: boolean; wer?: number | null; cer?: number | null; sample_count?: number; evaluated_at?: string | null; dataset?: string | null; message?: string };
 type Glossary = { id: string; term: string; category: string; aliases?: string[]; active: number; created_at: string };
-type IssabelSettings = { import_mode: string; mode?: string; recordings_path?: string; sftp_host?: string; sftp_port?: number; sftp_username?: string; sftp_remote_path?: string; poll_interval: number; file_stability_seconds: number; allowed_extensions: string; quarantine_path?: string; filename_pattern?: string; enabled: number; editable?: boolean; watcher_available?: boolean; watcher_health?: string; limitation?: string };
+type IssabelSettings = { import_mode: string; mode?: string; recordings_path?: string; sftp_host?: string; sftp_port?: number; sftp_username?: string; sftp_remote_path?: string; poll_interval: number; file_stability_seconds: number; allowed_extensions: string; quarantine_path?: string; filename_pattern?: string; enabled: number; editable?: boolean; watcher_available?: boolean; watcher_health?: string; limitation?: string; cdr_configured?: boolean; cdr_table?: string };
 type ProcessingOperation = { id: string; source_file?: string; file_name?: string; status: string; failed_stage?: string | null; stage?: string | null; error_type?: string | null; error_code?: string | null; safe_message?: string | null; error_message?: string | null; retry_count?: number; last_retry_at?: string | null; next_retry_at?: string | null; duration_seconds?: number | null; created_at?: string; updated_at?: string; worker?: string | null; correlation_id?: string | null; can_retry?: boolean; can_quarantine?: boolean; can_restore?: boolean; can_download_diagnostics?: boolean };
 type OperationsData = { items: ProcessingOperation[]; capabilities?: { retry?: boolean; diagnostics?: boolean; quarantine?: boolean }; limitation?: string };
-type AdminTab = "overview" | "members" | "teams" | "scorecards" | "automations" | "integrations" | "operations" | "accuracy" | "glossary" | "issabel" | "ai" | "security" | "audit";
+type AdminTab = "overview" | "members" | "teams" | "scorecards" | "automations" | "operations" | "accuracy" | "glossary" | "issabel" | "ai" | "security" | "audit";
 
-const tabs: Array<{ id: AdminTab; label: string; icon: string }> = [
-  { id: "overview", label: "نمای مدیریتی", icon: "◫" }, { id: "members", label: "کاربران", icon: "♙" },
-  { id: "teams", label: "تیم‌ها", icon: "♟" }, { id: "scorecards", label: "KPI و امتیاز", icon: "◎" },
-  { id: "automations", label: "اتوماسیون", icon: "⚡" }, { id: "integrations", label: "اتصال‌ها", icon: "⌁" },
-  { id: "operations", label: "عملیات پردازش", icon: "⚙" }, { id: "accuracy", label: "دقت مدل", icon: "٪" },
-  { id: "glossary", label: "واژه‌نامه", icon: "آ" }, { id: "issabel", label: "Issabel", icon: "☎" },
-  { id: "ai", label: "هوش مصنوعی", icon: "✦" }, { id: "security", label: "امنیت و داده", icon: "◇" },
-  { id: "audit", label: "گزارش فعالیت", icon: "≡" },
+const tabs: Array<{ id: AdminTab; label: string; icon: LucideIcon }> = [
+  { id: "overview", label: "نمای مدیریتی", icon: LayoutDashboard }, { id: "members", label: "کاربران", icon: Users },
+  { id: "teams", label: "تیم‌ها", icon: UsersRound }, { id: "scorecards", label: "KPI و امتیاز", icon: Gauge },
+  { id: "automations", label: "اتوماسیون", icon: Workflow },
+  { id: "operations", label: "عملیات پردازش", icon: Activity }, { id: "accuracy", label: "دقت مدل", icon: Sparkles },
+  { id: "glossary", label: "واژه‌نامه", icon: BookOpenText }, { id: "issabel", label: "Issabel", icon: AudioLines },
+  { id: "ai", label: "هوش مصنوعی", icon: BrainCircuit }, { id: "security", label: "امنیت و داده", icon: ShieldCheck },
+  { id: "audit", label: "گزارش فعالیت", icon: ScrollText },
 ];
 
 const roleLabel: Record<string, string> = { admin: "مدیر", manager: "مدیر فروش", supervisor: "سرپرست", agent: "کارشناس", viewer: "مشاهده‌گر", seller: "فروشنده (قدیمی)" };
 const actionLabel: Record<string, string> = {
   "organization.created": "فضای کاری ساخته شد", "organization.updated": "تنظیمات شرکت تغییر کرد", "member.created": "کاربر اضافه شد", "member.updated": "دسترسی کاربر تغییر کرد",
   "team.created": "تیم ساخته شد", "team.updated": "تیم تغییر کرد", "scorecard.created": "چک‌لیست ساخته شد", "scorecard.activated": "چک‌لیست فعال شد",
-  "automation.created": "قانون ساخته شد", "automation.toggled": "وضعیت قانون تغییر کرد", "integration.created": "اتصال ساخته شد", "integration.toggled": "وضعیت اتصال تغییر کرد",
+  "automation.created": "قانون ساخته شد", "automation.toggled": "وضعیت قانون تغییر کرد",
   "ai_settings.updated": "تنظیمات AI تغییر کرد", "security.updated": "تنظیمات امنیت تغییر کرد",
 };
 
@@ -54,7 +55,7 @@ async function optionalApi<T>(url: string, fallback: T): Promise<T> {
 export function AdminPanel({ organization, currentRole, onOrganizationChanged, onToast }: { organization: Organization | null; currentRole: string; onOrganizationChanged: () => Promise<void>; onToast: (message: string) => void }) {
   const [tab, setTab] = useState<AdminTab>(currentRole === "مدیر" ? "overview" : "scorecards"); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
   const [overview, setOverview] = useState<Overview | null>(null); const [members, setMembers] = useState<Member[]>([]); const [teams, setTeams] = useState<Team[]>([]);
-  const [scorecards, setScorecards] = useState<Scorecard[]>([]); const [automations, setAutomations] = useState<Automation[]>([]); const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [scorecards, setScorecards] = useState<Scorecard[]>([]); const [automations, setAutomations] = useState<Automation[]>([]);
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null); const [security, setSecurity] = useState<SecuritySettings | null>(null); const [audits, setAudits] = useState<Audit[]>([]);
   const [accuracy, setAccuracy] = useState<Accuracy>({ measured: false, message: "دقت هنوز اندازه‌گیری نشده است." }); const [glossary, setGlossary] = useState<Glossary[]>([]);
   const [issabel, setIssabel] = useState<IssabelSettings>({ import_mode: "disabled", poll_interval: 60, file_stability_seconds: 15, allowed_extensions: "wav,mp3,gsm", enabled: 0, watcher_available: false });
@@ -63,16 +64,16 @@ export function AdminPanel({ organization, currentRole, onOrganizationChanged, o
   const refresh = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [overviewData, memberData, teamData, scorecardData, automationData, integrationData, aiData, securityData, auditData, accuracyData, glossaryData, issabelData, operationsData] = await Promise.all([
-        optionalApi<Overview>("/api/v1/admin/overview", { members: 0, teams: 0, calls: 0, used_minutes: 0, storage_bytes: 0, pending_tasks: 0, active_integrations: 0, active_rules: 0 }), optionalApi<{ items: Member[] }>("/api/v1/admin/members", { items: [] }), optionalApi<{ items: Team[] }>("/api/v1/admin/teams", { items: [] }),
-        optionalApi<{ items: Scorecard[] }>("/api/v1/admin/scorecards", { items: [] }), optionalApi<{ items: Automation[] }>("/api/v1/admin/automations", { items: [] }), optionalApi<{ items: Integration[] }>("/api/v1/admin/integrations", { items: [] }),
+      const [overviewData, memberData, teamData, scorecardData, automationData, aiData, securityData, auditData, accuracyData, glossaryData, issabelData, operationsData] = await Promise.all([
+        optionalApi<Overview>("/api/v1/admin/overview", { members: 0, teams: 0, calls: 0, used_minutes: 0, storage_bytes: 0, pending_tasks: 0, active_rules: 0 }), optionalApi<{ items: Member[] }>("/api/v1/admin/members", { items: [] }), optionalApi<{ items: Team[] }>("/api/v1/admin/teams", { items: [] }),
+        optionalApi<{ items: Scorecard[] }>("/api/v1/admin/scorecards", { items: [] }), optionalApi<{ items: Automation[] }>("/api/v1/admin/automations", { items: [] }),
         optionalApi<AiSettings>("/api/v1/admin/ai-settings", { provider: "openai", transcription_model: "—", analysis_model: "—", min_confidence: .75 }), optionalApi<SecuritySettings>("/api/v1/admin/security", { require_consent: 1, audio_download_enabled: 0 }), optionalApi<{ items: Audit[] }>("/api/v1/admin/audit-logs", { items: [] }),
         optionalApi<Accuracy>("/api/v1/admin/accuracy", { measured: false, message: "دقت هنوز با دیتاست واقعی اندازه‌گیری نشده است." }),
         optionalApi<{ items: Glossary[] }>("/api/v1/admin/glossary", { items: [] }),
         optionalApi<IssabelSettings>("/api/v1/admin/issabel-settings", { import_mode: "disabled", poll_interval: 60, file_stability_seconds: 15, allowed_extensions: "wav,mp3,gsm", enabled: 0, watcher_available: false, limitation: "API تنظیمات Issabel در Backend فعلی در دسترس نیست." }),
         optionalApi<OperationsData>("/api/v1/admin/processing-operations", { items: [], limitation: "API عملیات پردازش در Backend فعلی در دسترس نیست." }),
       ]);
-      setOverview(overviewData); setMembers(memberData.items); setTeams(teamData.items); setScorecards(scorecardData.items); setAutomations(automationData.items); setIntegrations(integrationData.items); setAiSettings(aiData); setSecurity(securityData); setAudits(auditData.items);
+      setOverview(overviewData); setMembers(memberData.items); setTeams(teamData.items); setScorecards(scorecardData.items); setAutomations(automationData.items); setAiSettings(aiData); setSecurity(securityData); setAudits(auditData.items);
       const rawIssabel = issabelData as IssabelSettings & { allowed_extensions?: string | string[]; mode?: string };
       setAccuracy(accuracyData); setGlossary(glossaryData.items); setIssabel({ ...issabelData, import_mode: rawIssabel.import_mode ?? rawIssabel.mode ?? "disabled", allowed_extensions: Array.isArray(rawIssabel.allowed_extensions) ? rawIssabel.allowed_extensions.join(",") : rawIssabel.allowed_extensions ?? "wav,mp3,gsm" }); setOperations(operationsData);
     } catch { setError("دریافت اطلاعات مدیریتی انجام نشد. دسترسی مدیر و اتصال سرویس را بررسی کنید."); } finally { setLoading(false); }
@@ -90,7 +91,7 @@ export function AdminPanel({ organization, currentRole, onOrganizationChanged, o
   return <div className="admin-page">
     <div className="live-heading admin-title"><div><span>مرکز کنترل شرکت</span><h1>پنل مدیریت</h1><p>کاربران، کیفیت فروش، هوش مصنوعی و امنیت را از یک نقطه مدیریت کنید.</p></div><div className="admin-health"><i /> سامانه آماده است</div></div>
     <div className="admin-layout">
-      <aside className="admin-nav">{visibleTabs.map((item) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><i>{item.icon}</i><span>{item.label}</span>{item.id === "members" && <b>{fa(members.length)}</b>}</button>)}</aside>
+      <aside className="admin-nav">{visibleTabs.map((item) => { const Icon = item.icon; return <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><i><Icon size={18} strokeWidth={1.9} /></i><span>{item.label}</span>{item.id === "members" && <b>{fa(members.length)}</b>}</button>; })}</aside>
       <section className="admin-surface">
         {loading ? <AdminState title="در حال دریافت اطلاعات مدیریت" /> : error ? <AdminState title={error} action={<button onClick={() => void refresh()}>تلاش دوباره</button>} /> : <>
           {tab === "overview" && overview && <AdminOverview data={overview} organization={organization} activeScorecard={activeScorecard} onTab={setTab} />}
@@ -98,7 +99,6 @@ export function AdminPanel({ organization, currentRole, onOrganizationChanged, o
           {tab === "teams" && <Teams teams={teams} members={members} run={run} />}
           {tab === "scorecards" && <Scorecards items={scorecards} editable={currentRole === "مدیر"} run={run} />}
           {tab === "automations" && <Automations items={automations} run={run} />}
-          {tab === "integrations" && <Integrations items={integrations} run={run} />}
           {tab === "operations" && <ProcessingOperations data={operations} run={run} />}
           {tab === "accuracy" && <AccuracyPanel data={accuracy} />}
           {tab === "glossary" && <GlossaryPanel items={glossary} editable={currentRole === "مدیر" || currentRole === "مدیر فروش"} run={run} />}
@@ -121,8 +121,8 @@ function errorMessage(cause: unknown) {
 function AdminOverview({ data, organization, activeScorecard, onTab }: { data: Overview; organization: Organization | null; activeScorecard?: Scorecard; onTab: (tab: AdminTab) => void }) {
   const usage = organization?.monthly_minute_limit ? Math.min(100, Math.round(data.used_minutes / organization.monthly_minute_limit * 100)) : 0;
   return <><Header title="نمای مدیریتی" description="وضعیت لحظه‌ای فضای کاری و موارد نیازمند توجه" />
-    <div className="admin-metrics"><Metric label="کاربران فعال" value={data.members} hint={`${data.teams} تیم`} icon="♙" /><Metric label="تماس‌های ثبت‌شده" value={data.calls} hint={`${data.pending_tasks} پیگیری باز`} icon="☎" /><Metric label="مصرف ماهانه" value={`${fa(data.used_minutes)} دقیقه`} hint={`${fa(usage)}٪ از سهمیه`} icon="◴" /><Metric label="فضای صوت" value={bytes(data.storage_bytes)} hint="ذخیره‌سازی واقعی" icon="▣" /></div>
-    <div className="admin-overview-grid"><article className="admin-card"><div className="admin-card-head"><div><h3>آمادگی سامانه</h3><p>تنظیمات کلیدی برای بهره‌برداری</p></div><span className="status-good">فعال</span></div><Status label="چک‌لیست امتیاز" value={activeScorecard?.name ?? "هنوز تنظیم نشده"} good={Boolean(activeScorecard)} /><Status label="قوانین اتوماسیون" value={`${fa(data.active_rules)} قانون فعال`} good={data.active_rules > 0} /><Status label="اتصال‌های فعال" value={`${fa(data.active_integrations)} اتصال`} good={data.active_integrations > 0} /></article>
+    <div className="admin-metrics"><Metric label="کاربران فعال" value={data.members} hint={`${data.teams} تیم`} icon={Users} /><Metric label="تماس‌های ثبت‌شده" value={data.calls} hint={`${data.pending_tasks} پیگیری باز`} icon={AudioLines} /><Metric label="مصرف ماهانه" value={`${fa(data.used_minutes)} دقیقه`} hint={`${fa(usage)}٪ از سهمیه`} icon={Activity} /><Metric label="فضای صوت" value={bytes(data.storage_bytes)} hint="ذخیره‌سازی واقعی" icon={HardDrive} /></div>
+    <div className="admin-overview-grid"><article className="admin-card"><div className="admin-card-head"><div><h3>آمادگی سامانه</h3><p>تنظیمات کلیدی برای بهره‌برداری</p></div><span className="status-good">فعال</span></div><Status label="چک‌لیست امتیاز" value={activeScorecard?.name ?? "هنوز تنظیم نشده"} good={Boolean(activeScorecard)} /><Status label="قوانین اتوماسیون" value={`${fa(data.active_rules)} قانون فعال`} good={data.active_rules > 0} /></article>
       <article className="admin-card"><div className="admin-card-head"><div><h3>راه‌اندازی سریع</h3><p>برای آماده‌شدن کامل این موارد را انجام دهید</p></div></div><Quick label="افزودن اعضای تیم" done={data.members > 1} onClick={() => onTab("members")} /><Quick label="ساخت تیم فروش" done={data.teams > 0} onClick={() => onTab("teams")} /><Quick label="فعال‌کردن KPI" done={Boolean(activeScorecard)} onClick={() => onTab("scorecards")} /><Quick label="تنظیم هوش مصنوعی" done onClick={() => onTab("ai")} /></article></div>
   </>;
 }
@@ -154,15 +154,8 @@ function Scorecards({ items, editable, run }: { items: Scorecard[]; editable: bo
 
 function Automations({ items, run }: { items: Automation[]; run: (work: () => Promise<unknown>, success: string) => Promise<void> }) {
   const [open, setOpen] = useState(false); async function add(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); await run(() => api("/api/v1/admin/automations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(values) }), "قانون اتوماسیون ساخته شد"); setOpen(false); }
-  return <><Header title="اتوماسیون‌ها" description="اقدام‌های خودکار پس از تحلیل تماس" action={<button onClick={() => setOpen(!open)}>＋ قانون جدید</button>} />{open && <form className="admin-form-grid admin-inline-card" onSubmit={add}><Field label="نام قانون"><input name="name" required /></Field><Field label="رویداد"><select name="event"><option value="call.completed">تکمیل تحلیل تماس</option><option value="call.failed">خطای پردازش</option><option value="score.low">امتیاز پایین</option><option value="followup.overdue">پیگیری عقب‌افتاده</option></select></Field><Field label="اقدام"><select name="action"><option value="task.create">ساخت وظیفه</option><option value="message.create">ساخت پیام</option><option value="manager.notify">اعلان به مدیر</option><option value="webhook.send">ارسال Webhook</option></select></Field><Field label="شیوه اجرا"><select name="mode"><option value="approval">نیازمند تأیید</option><option value="draft">فقط پیش‌نویس</option><option value="automatic">خودکار</option></select></Field><button>ساخت قانون</button></form>}
+  return <><Header title="اتوماسیون‌ها" description="اقدام‌های خودکار پس از تحلیل تماس" action={<button onClick={() => setOpen(!open)}>＋ قانون جدید</button>} />{open && <form className="admin-form-grid admin-inline-card" onSubmit={add}><Field label="نام قانون"><input name="name" required /></Field><Field label="رویداد"><select name="event"><option value="call.completed">تکمیل تحلیل تماس</option><option value="call.failed">خطای پردازش</option><option value="score.low">امتیاز پایین</option><option value="followup.overdue">پیگیری عقب‌افتاده</option></select></Field><Field label="اقدام"><select name="action"><option value="task.create">ساخت وظیفه</option><option value="message.create">ساخت پیام</option><option value="manager.notify">اعلان به مدیر</option></select></Field><Field label="شیوه اجرا"><select name="mode"><option value="approval">نیازمند تأیید</option><option value="draft">فقط پیش‌نویس</option><option value="automatic">خودکار</option></select></Field><button>ساخت قانون</button></form>}
     <div className="admin-stack">{items.map((item) => <article className="admin-row-card" key={item.id}><div className="rule-icon">⚡</div><div><h3>{item.name}</h3><p>{item.event} ← {item.action} · {item.mode}</p></div><Toggle checked={Boolean(item.enabled)} label={item.enabled ? "فعال" : "متوقف"} onChange={(enabled) => void run(() => api(`/api/v1/admin/automations/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled }) }), "وضعیت قانون تغییر کرد")} /></article>)}{items.length === 0 && <AdminEmpty text="هنوز قانون اتوماسیونی ساخته نشده است" />}</div>
-  </>;
-}
-
-function Integrations({ items, run }: { items: Integration[]; run: (work: () => Promise<unknown>, success: string) => Promise<void> }) {
-  const [open, setOpen] = useState(false); async function add(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); await run(() => api("/api/v1/admin/integrations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(values) }), "اتصال ذخیره شد"); setOpen(false); }
-  return <><Header title="اتصال‌ها" description="تعریف اتصال با اتصال اجرایی فرق دارد؛ فقط Connector تست‌شده می‌تواند فعال شود." action={<button onClick={() => setOpen(!open)}>＋ تعریف اتصال</button>} />{open && <form className="admin-form-grid admin-inline-card" onSubmit={add}><Field label="نام اتصال"><input name="name" required /></Field><Field label="نوع"><select name="kind"><option value="crm">CRM عمومی</option><option value="webhook">Webhook</option><option value="telephony">تلفن</option><option value="sms">پیامک</option><option value="email">ایمیل</option><option value="whatsapp">واتساپ</option><option value="api">API</option></select></Field><button>ذخیره تعریف</button></form>}
-    <div className="admin-card-grid integrations-grid">{items.map((item) => <article className="admin-team-card" key={item.id}><header><i>⌁</i><span className={item.status === "active" && item.operational !== false ? "status-good" : "status-muted"}>{item.status === "active" && item.operational !== false ? "متصل" : "تعریف‌شده"}</span></header><h3>{item.name}</h3><p>{item.kind}</p>{item.limitation && <small className="integration-limitation">{item.limitation}</small>}<footer>{item.can_activate === false || item.operational === false ? <button disabled title={item.limitation}>فعال‌سازی غیرفعال</button> : <Toggle checked={item.status === "active"} label={item.status === "active" ? "متصل" : "قطع"} onChange={(active) => void run(() => api(`/api/v1/admin/integrations/${item.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: active ? "active" : "inactive" }) }), "وضعیت اتصال تغییر کرد")} />}</footer></article>)}{items.length === 0 && <AdminEmpty text="هنوز اتصالی تعریف نشده است" />}</div>
   </>;
 }
 
@@ -189,7 +182,7 @@ function ProcessingOperations({ data, run }: { data: OperationsData; run: (work:
 
 function AccuracyPanel({ data }: { data: Accuracy }) {
   return <><Header title="دقت رونویسی فارسی" description="نتیجه فقط از اجرای دیتاست ارزیابی ثبت‌شده نمایش داده می‌شود." />
-    {!data.measured ? <div className="accuracy-unmeasured"><i>!</i><div><h3>دقت هنوز اندازه‌گیری نشده است</h3><p>{data.message ?? "تا زمان اجرای ارزیابی روی تماس‌های واقعی فارسی، هیچ ادعای ۸۵٪ یا عدد دیگری نمایش داده نمی‌شود."}</p></div></div> : <div className="admin-metrics"><Metric icon="W" label="WER" value={data.wer == null ? "—" : fa((data.wer * 100).toFixed(1)) + "٪"} hint="نرخ خطای واژه" /><Metric icon="C" label="CER" value={data.cer == null ? "—" : fa((data.cer * 100).toFixed(1)) + "٪"} hint="نرخ خطای نویسه" /><Metric icon="#" label="نمونه‌ها" value={data.sample_count ?? 0} hint={data.dataset ?? "دیتاست ثبت‌شده"} /><Metric icon="◷" label="آخرین ارزیابی" value={data.evaluated_at ? date(data.evaluated_at) : "—"} hint="زمان ثبت گزارش" /></div>}
+    {!data.measured ? <div className="accuracy-unmeasured"><i>!</i><div><h3>دقت هنوز اندازه‌گیری نشده است</h3><p>{data.message ?? "تا زمان اجرای ارزیابی روی تماس‌های واقعی فارسی، هیچ ادعای ۸۵٪ یا عدد دیگری نمایش داده نمی‌شود."}</p></div></div> : <div className="admin-metrics"><Metric icon={TextCursorInput} label="WER" value={data.wer == null ? "—" : fa((data.wer * 100).toFixed(1)) + "٪"} hint="نرخ خطای واژه" /><Metric icon={Baseline} label="CER" value={data.cer == null ? "—" : fa((data.cer * 100).toFixed(1)) + "٪"} hint="نرخ خطای نویسه" /><Metric icon={Hash} label="نمونه‌ها" value={data.sample_count ?? 0} hint={data.dataset ?? "دیتاست ثبت‌شده"} /><Metric icon={Clock3} label="آخرین ارزیابی" value={data.evaluated_at ? date(data.evaluated_at) : "—"} hint="زمان ثبت گزارش" /></div>}
     <section className="admin-card"><h3>معیار پذیرش</h3><p>برای ادعای کیفیت پایلوت، گزارش WER/CER، دقت عددها و موجودیت‌ها باید از تماس‌های واقعی و غیرحساس شرکت تولید شود. داده نمونه صرفاً سلامت ابزار ارزیابی را می‌سنجد.</p></section>
   </>;
 }
@@ -218,17 +211,17 @@ function IssabelPanel({ settings, run, onToast }: { settings: IssabelSettings; r
     event.preventDefault(); await run(() => api("/api/v1/admin/issabel-settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(form) }), available ? "تنظیمات Issabel ذخیره شد" : "تنظیمات ذخیره شد؛ برای فعال‌سازی Worker را متصل کنید");
   }
   async function test() {
-    try { const result = await api<{ ok?: boolean; status?: string; message?: string; error?: string }>("/api/v1/admin/issabel-settings/test", { method: "POST" }); onToast(result.ok === false ? "آزمایش ناموفق: " + (result.error ?? "اتصال برقرار نشد") : result.message ?? "آزمایش اتصال موفق بود"); }
+    try { const result = await api<{ ok?: boolean; status?: string; message?: string; error?: string; cdr?: string }>("/api/v1/admin/issabel-settings/test", { method: "POST" }); onToast(result.ok === false ? "آزمایش ناموفق: " + (result.error ?? (result.cdr === "unavailable" ? "اتصال CDR برقرار نشد" : "اتصال برقرار نشد")) : result.message ?? "آزمایش پوشه و CDR موفق بود"); }
     catch (cause) { onToast(cause instanceof Error ? cause.message : "آزمایش اتصال ناموفق بود"); }
   }
   return <><Header title="دریافت خودکار Issabel / Asterisk" description="پایش خودکار پوشه محلی، پوشه اشتراکی یا SMB mount بدون دخالت روزانه" />
     <div className={"issabel-health " + (form.watcher_health === "healthy" ? "healthy" : "offline")}><i /><div><strong>{form.watcher_health === "healthy" ? "Watcher سالم و فعال است" : available ? "تنظیمات از Backend خوانده شد" : "Watcher متصل نیست"}</strong><span>{form.limitation ?? (editable ? "وضعیت از health endpoint سرویس Watcher خوانده می‌شود." : "این نصب تنظیمات Issabel را از متغیرهای محیطی سرور می‌خواند؛ ویرایش مرورگری فعال نیست.")}</span></div></div>
     <form className="admin-settings-form" onSubmit={save}><section className="admin-card"><div className="admin-card-head"><div><h3>روش دریافت</h3><p>رمز SFTP و کلید خصوصی فقط از متغیر امن سرور خوانده می‌شوند و در مرورگر ذخیره نمی‌شوند.</p></div><span className={form.enabled ? "status-good" : "status-muted"}>{form.enabled ? "فعال" : "غیرفعال"}</span></div>
-      <div className="admin-form-grid"><Field label="روش import"><select value={form.import_mode} onChange={(event) => set("import_mode", event.target.value)}><option value="disabled">غیرفعال</option><option value="folder">پوشه اشتراکی / SMB mount</option><option value="sftp" disabled>SFTP Puller (هنوز عملیاتی نیست)</option></select></Field>
-      {form.import_mode === "folder" && <Field label="مسیر فایل‌های ضبط"><input dir="ltr" value={form.recordings_path ?? ""} onChange={(event) => set("recordings_path", event.target.value)} placeholder="/var/spool/asterisk/monitor" /></Field>}
+      <div className="admin-form-grid"><Field label="روش import"><select value={form.import_mode} onChange={(event) => set("import_mode", event.target.value)}><option value="disabled">غیرفعال</option><option value="shared_folder">پوشه اشتراکی / SMB / NFS</option><option value="local">پوشه محلی mount‌شده</option><option value="sftp" disabled>SFTP Puller (متعلق به A2)</option></select></Field>
+      {["folder", "shared_folder", "local"].includes(form.import_mode) && <Field label="مسیر فایل‌های ضبط"><input dir="ltr" value={form.recordings_path ?? ""} onChange={(event) => set("recordings_path", event.target.value)} placeholder="/var/spool/asterisk/monitor" /></Field>}
       {form.import_mode === "sftp" && <><Field label="میزبان SFTP"><input dir="ltr" value={form.sftp_host ?? ""} onChange={(event) => set("sftp_host", event.target.value)} /></Field><Field label="پورت"><input type="number" min="1" max="65535" value={form.sftp_port ?? 22} onChange={(event) => set("sftp_port", Number(event.target.value))} /></Field><Field label="نام کاربری"><input dir="ltr" value={form.sftp_username ?? ""} onChange={(event) => set("sftp_username", event.target.value)} /></Field><Field label="مسیر راه‌دور"><input dir="ltr" value={form.sftp_remote_path ?? ""} onChange={(event) => set("sftp_remote_path", event.target.value)} /></Field></>}
       <Field label="فاصله پایش (ثانیه)"><input type="number" min="10" max="3600" value={form.poll_interval} onChange={(event) => set("poll_interval", Number(event.target.value))} /></Field><Field label="زمان پایداری فایل (ثانیه)"><input type="number" min="5" max="600" value={form.file_stability_seconds} onChange={(event) => set("file_stability_seconds", Number(event.target.value))} /></Field><Field label="پسوندهای مجاز"><input dir="ltr" value={form.allowed_extensions} onChange={(event) => set("allowed_extensions", event.target.value)} /></Field><Field label="مسیر قرنطینه"><input dir="ltr" value={form.quarantine_path ?? ""} onChange={(event) => set("quarantine_path", event.target.value)} /></Field><Field label="الگوی نام فایل"><input dir="ltr" value={form.filename_pattern ?? ""} onChange={(event) => set("filename_pattern", event.target.value)} placeholder="regex اختیاری" /></Field></div>
-    </section><div className="form-actions"><button type="button" className="admin-secondary" disabled={!available} title={available ? "" : "برای تست، Backend و Watcher باید اجرا شوند"} onClick={() => void test()}>آزمایش اتصال</button><button disabled={!editable} title={editable ? "" : "این نصب تنظیمات را فقط از متغیرهای محیطی امن می‌خواند"}>ذخیره تنظیمات</button></div></form>
+    </section><section className="admin-card"><div className="admin-card-head"><div><h3>تطبیق CDR فقط‌خواندنی</h3><p>آدرس و رمز دیتابیس در مرورگر نمایش داده نمی‌شود.</p></div><span className={form.cdr_configured ? "status-good" : "status-muted"}>{form.cdr_configured ? "پیکربندی‌شده" : "پیکربندی‌نشده"}</span></div><div className="admin-capability-note"><strong>جدول CDR</strong><span>{form.cdr_table ?? "cdr"} · نتیجه هر تماس با وضعیت matched، ambiguous یا unmatched ثبت می‌شود.</span></div></section><div className="form-actions"><button type="button" className="admin-secondary" disabled={!available} title={available ? "" : "برای تست، Backend و Watcher باید اجرا شوند"} onClick={() => void test()}>آزمایش پوشه و CDR</button><button disabled={!editable} title={editable ? "" : "این نصب تنظیمات را فقط از متغیرهای محیطی امن می‌خواند"}>ذخیره تنظیمات</button></div></form>
   </>;
 }
 
@@ -246,7 +239,7 @@ function Security({ organization, settings, run, onOrganizationChanged }: { orga
 function AuditLog({ items }: { items: Audit[] }) { return <><Header title="گزارش فعالیت" description="ردپای تغییرات مدیریتی فضای کاری" /><div className="admin-timeline">{items.map((item) => <article key={item.id}><i /><div><strong>{actionLabel[item.action] ?? item.action}</strong><p>{item.actor_email} · {item.entity_type}</p></div><time>{date(item.created_at)}</time></article>)}{items.length === 0 && <AdminEmpty text="هنوز فعالیت مدیریتی ثبت نشده است" />}</div></>; }
 
 function Header({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) { return <header className="admin-section-head"><div><h2>{title}</h2><p>{description}</p></div>{action}</header>; }
-function Metric({ label, value, hint, icon }: { label: string; value: string | number; hint: string; icon: string }) { return <article><i>{icon}</i><span>{label}</span><strong>{typeof value === "number" ? fa(value) : value}</strong><small>{hint}</small></article>; }
+function Metric({ label, value, hint, icon: Icon }: { label: string; value: string | number; hint: string; icon: LucideIcon }) { return <article><i><Icon size={19} /></i><span>{label}</span><strong>{typeof value === "number" ? fa(value) : value}</strong><small>{hint}</small></article>; }
 function Status({ label, value, good }: { label: string; value: string; good: boolean }) { return <div className="admin-status-row"><i className={good ? "good" : "warn"}>{good ? "✓" : "!"}</i><span><strong>{label}</strong><small>{value}</small></span></div>; }
 function Quick({ label, done, onClick }: { label: string; done: boolean; onClick: () => void }) { return <button className="admin-quick" onClick={onClick}><i className={done ? "done" : ""}>{done ? "✓" : "○"}</i><span>{label}</span><b>←</b></button>; }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="admin-field"><span>{label}</span>{children}</label>; }

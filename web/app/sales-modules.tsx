@@ -71,8 +71,12 @@ function sellerStats(calls: CallItem[]) {
 }
 
 export function TeamPerformanceView() {
-  const data = useCalls(); const stats = useMemo(() => sellerStats(data.calls), [data.calls]);
-  return <Shell eyebrow="مدیریت تیم" title="مقایسه فروشنده‌ها" description="امتیاز، نرخ تبدیل و حجم پیگیری از تماس‌های واقعی هر فروشنده محاسبه می‌شود." data={data}><section className="live-panel">{stats.length === 0 ? <Empty title="داده‌ای برای مقایسه وجود ندارد" text="پس از ثبت تماس‌های فروشندگان، جدول عملکرد تیم ساخته می‌شود." /> : <div className="live-table-wrap"><table className="live-table"><thead><tr><th>فروشنده</th><th>تماس</th><th>امتیاز متوسط</th><th>فروش تأییدشده</th><th>نرخ تبدیل</th><th>پیگیری</th></tr></thead><tbody>{stats.map((item) => <tr key={item.seller}><td><strong>{item.seller}</strong></td><td>{fa(item.calls)}</td><td>{item.scored ? fa(Math.round(item.totalScore / item.scored)) : "—"}</td><td>{fa(item.won)}</td><td>{item.calls ? fa(Math.round(item.won / item.calls * 100)) + "٪" : "—"}</td><td>{fa(item.followups)}</td></tr>)}</tbody></table></div>}</section></Shell>;
+  type TeamRow = { seller_email?: string | null; seller_name?: string | null; calls: number; average_score?: number | null; won: number; conversion_rate: number };
+  const [items, setItems] = useState<TeamRow[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  const load = useCallback(async () => { setLoading(true); setError(""); try { const result = await requestJson<{ items: TeamRow[] }>("/api/v1/reports/team"); setItems(result.items ?? []); } catch (cause) { setError(cause instanceof Error ? cause.message : "دریافت گزارش تیم انجام نشد"); } finally { setLoading(false); } }, []);
+  useEffect(() => { const timer = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(timer); }, [load]);
+  const data: Dataset = { calls: [], loading, error, reload: () => void load() };
+  return <Shell eyebrow="مدیریت تیم" title="مقایسه فروشنده‌ها" description="این گزارش در سرور و فقط از نسخه‌های رسمی منتشرشده محاسبه می‌شود." data={data}><section className="live-panel">{items.length === 0 ? <Empty title="داده رسمی برای مقایسه وجود ندارد" text="پس از بازبینی و انتشار تماس‌ها، جدول عملکرد تیم ساخته می‌شود." /> : <div className="live-table-wrap"><table className="live-table"><thead><tr><th>فروشنده</th><th>تماس رسمی</th><th>امتیاز متوسط</th><th>فروش تأییدشده</th><th>نرخ تبدیل</th></tr></thead><tbody>{items.map((item) => <tr key={item.seller_email || item.seller_name || "unknown"}><td><strong>{item.seller_name || item.seller_email || "فروشنده نامشخص"}</strong></td><td>{fa(item.calls)}</td><td>{item.average_score == null ? "—" : fa(item.average_score)}</td><td>{fa(item.won)}</td><td>{fa(item.conversion_rate)}٪</td></tr>)}</tbody></table></div>}</section></Shell>;
 }
 
 export function CoachingView() {

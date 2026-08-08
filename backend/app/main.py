@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import html
+import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -7,15 +10,22 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import asc, desc, func, or_, select, text
+from sqlalchemy import case as sa_case
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import get_settings
 from .database import engine, tenant_session
 from .models import (
     AiSetting,
+    AnalysisVersion,
+    ArtifactVersion,
     AuditLog,
     AutomationRule,
     Base,
@@ -23,14 +33,16 @@ from .models import (
     CallExtraction,
     CallOutcome,
     CallStatus,
+    CdrMatch,
     ExtractionEvidence,
     GlossaryTerm,
-    Integration,
     Membership,
     MessageDraft,
     Organization,
     PipelineEvent,
     ProcessingError,
+    RetentionJob,
+    ReviewCase,
     Role,
     ScorecardVersion,
     SecuritySetting,
@@ -38,24 +50,26 @@ from .models import (
     Team,
     TranscriptCorrection,
     TranscriptSegment,
+    TranscriptVersion,
     UsageLedger,
     WatcherHeartbeat,
 )
 from .schemas import (
     AiSettingsPatch,
+    AnalysisVersionCreate,
     AutomationCreate,
     CallRead,
     EnabledPatch,
     GlossaryCreate,
     GlossaryPatch,
-    IntegrationCreate,
-    IntegrationStatusPatch,
     MemberCreate,
     MemberPatch,
     OrganizationSettingsPatch,
     PaginatedCalls,
     ProcessingAction,
     ReprocessRequest,
+    ReviewActionRequest,
+    ReviewAssignRequest,
     ScorecardCreate,
     SecuritySettingsPatch,
     SegmentCorrection,
@@ -64,17 +78,22 @@ from .schemas import (
     TaskPatch,
     TeamCreate,
     TeamPatch,
+    TranscriptVersionCreate,
 )
 from .security import Principal, current_principal, require_roles
+from .services.cdr import cdr_matcher
 from .services.exports import render_call_pdf, render_call_xlsx, render_calls_xlsx
-from .services.integrations import secret_box
 from .services.keycloak import keycloak_admin
 from .services.logging import configure_logging
 from .services.persian import normalize_persian
 from .services.storage import storage
+from .services.versioning import snapshot_transcript, transition_review
 from .tasks import process_call
 
 settings = get_settings()
+rate_limit_redis = Redis.from_url(
+    settings.redis_url, socket_connect_timeout=1, socket_timeout=1, decode_responses=True
+)
 configure_logging(settings.log_level)
 
 
@@ -121,6 +140,20 @@ def _call_read(call: Call, extraction: CallExtraction | None = None) -> CallRead
         "next_retry_at": call.next_retry_at,
         "error_code": call.error_code,
         "manually_corrected": call.manually_corrected,
+        "review_status": (
+            "published"
+            if call.published_analysis_version_id == call.latest_analysis_version_id
+            and call.latest_analysis_version_id
+            else "approved"
+            if call.reviewed_analysis_version_id == call.latest_analysis_version_id
+            and call.latest_analysis_version_id
+            else "draft"
+            if call.latest_analysis_version_id
+            else None
+        ),
+        "latest_analysis_version_id": call.latest_analysis_version_id,
+        "reviewed_analysis_version_id": call.reviewed_analysis_version_id,
+        "published_analysis_version_id": call.published_analysis_version_id,
     }
     if extraction:
         payload.update(
@@ -188,7 +221,10 @@ async def lifespan(_: FastAPI):
             )
             await connection.exec_driver_sql(policy_file.read_text(encoding="utf-8"))
         await storage.ensure_bucket()
-    yield
+    try:
+        yield
+    finally:
+        await rate_limit_redis.aclose()
 
 
 app = FastAPI(
@@ -205,6 +241,34 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Recording-Consent"],
 )
+
+
+@app.middleware("http")
+async def enforce_rate_limit(request, call_next):
+    if request.url.path.startswith(("/health", "/metrics")):
+        return await call_next(request)
+    identity = request.headers.get("authorization") or (
+        request.client.host if request.client else "unknown"
+    )
+    digest = hashlib.sha256(identity.encode("utf-8", errors="ignore")).hexdigest()[:24]
+    minute = int(datetime.now(UTC).timestamp() // 60)
+    key = f"rate:{digest}:{minute}"
+    try:
+        count = await rate_limit_redis.incr(key)
+        if count == 1:
+            await rate_limit_redis.expire(key, 120)
+        if count > settings.api_rate_limit_per_minute:
+            return Response(
+                json.dumps({"detail": "rate_limit_exceeded"}),
+                status_code=429,
+                media_type="application/json",
+                headers={"Retry-After": "60"},
+            )
+    except (RedisError, OSError):
+        # Availability is reported by /health/ready. A temporary Redis outage
+        # must not turn every authenticated API request into an outage.
+        return await call_next(request)
+    return await call_next(request)
 
 
 async def db_session(
@@ -226,12 +290,33 @@ async def health_live():
 
 @app.get("/health/ready")
 async def health_ready():
+    checks: dict[str, str] = {}
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="database_unavailable") from exc
-    return {"status": "ready", "database": "ok"}
+        checks["database"] = "ok"
+    except (SQLAlchemyError, OSError):
+        checks["database"] = "unavailable"
+    redis_client = Redis.from_url(settings.redis_url, socket_connect_timeout=3, socket_timeout=3)
+    try:
+        await redis_client.ping()
+        checks["redis"] = "ok"
+    except (RedisError, OSError):
+        checks["redis"] = "unavailable"
+    finally:
+        await redis_client.aclose()
+    storage_result, identity_result = await asyncio.gather(
+        storage.health(), keycloak_admin.health(), return_exceptions=True
+    )
+    checks["storage"] = "ok" if storage_result is True else "unavailable"
+    checks["identity"] = "ok" if identity_result is True else "unavailable"
+    if any(value != "ok" for value in checks.values()):
+        return Response(
+            json.dumps({"status": "not_ready", **checks}),
+            status_code=503,
+            media_type="application/json",
+        )
+    return {"status": "ready", **checks}
 
 
 @app.get("/metrics")
@@ -296,6 +381,9 @@ async def health_details(
         },
         "storage": {"status": "configured", "bucket": settings.s3_bucket},
         "external_model": {"status": "configured" if settings.openai_api_key else "not_configured"},
+        "issabel_cdr": {
+            "status": "configured" if settings.issabel_cdr_database_url else "not_configured"
+        },
         "failed_calls": failed,
     }
 
@@ -315,12 +403,22 @@ async def overview(
         )
         or 0
     )
-    average_score = await session.scalar(select(func.avg(Call.score)).where(*scope))
+    published_scope = [*scope, Call.published_analysis_version_id.is_not(None)]
+    average_score = await session.scalar(
+        select(func.avg(AnalysisVersion.score))
+        .select_from(Call)
+        .join(AnalysisVersion, AnalysisVersion.id == Call.published_analysis_version_id)
+        .where(*published_scope)
+    )
+    published_total = (
+        await session.scalar(select(func.count()).select_from(Call).where(*published_scope)) or 0
+    )
     won = (
         await session.scalar(
             select(func.count())
             .select_from(Call)
-            .where(*scope, Call.outcome == CallOutcome.won, Call.outcome_confirmed.is_(True))
+            .join(AnalysisVersion, AnalysisVersion.id == Call.published_analysis_version_id)
+            .where(*published_scope, AnalysisVersion.outcome == CallOutcome.won.value)
         )
         or 0
     )
@@ -328,7 +426,54 @@ async def overview(
         "total_calls": total,
         "completed_calls": completed,
         "average_score": round(float(average_score), 1) if average_score is not None else None,
-        "confirmed_conversion_rate": round(won / total * 100, 1) if total else None,
+        "confirmed_conversion_rate": (
+            round(won / published_total * 100, 1) if published_total else None
+        ),
+    }
+
+
+@app.get("/api/v1/reports/team")
+async def team_report(
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    rows = (
+        await session.execute(
+            select(
+                Call.seller_email,
+                Call.seller_name,
+                func.count(Call.id).label("calls"),
+                func.avg(AnalysisVersion.score).label("average_score"),
+                func.sum(
+                    sa_case((AnalysisVersion.outcome == CallOutcome.won.value, 1), else_=0)
+                ).label("won"),
+            )
+            .join(AnalysisVersion, AnalysisVersion.id == Call.published_analysis_version_id)
+            .where(
+                Call.tenant_id == principal.tenant_id,
+                Call.published_analysis_version_id.is_not(None),
+            )
+            .group_by(Call.seller_email, Call.seller_name)
+            .order_by(func.avg(AnalysisVersion.score).desc().nullslast())
+        )
+    ).all()
+    return {
+        "official_only": True,
+        "items": [
+            {
+                "seller_email": row.seller_email,
+                "seller_name": row.seller_name,
+                "calls": row.calls,
+                "average_score": (
+                    round(float(row.average_score), 1) if row.average_score is not None else None
+                ),
+                "won": int(row.won or 0),
+                "conversion_rate": round(int(row.won or 0) / row.calls * 100, 1),
+            }
+            for row in rows
+        ],
     }
 
 
@@ -626,9 +771,34 @@ async def get_call(
     security_settings = await session.scalar(
         select(SecuritySetting).where(SecuritySetting.tenant_id == principal.tenant_id)
     )
+    latest_version = (
+        await session.get(AnalysisVersion, call.latest_analysis_version_id)
+        if call.latest_analysis_version_id
+        else None
+    )
+    cdr_match = await session.scalar(
+        select(CdrMatch).where(CdrMatch.call_id == call.id).order_by(CdrMatch.created_at.desc())
+    )
     return {
         "call": _call_read(call, extraction),
-        "analysis": call.analysis_json,
+        "analysis": latest_version.analysis_json if latest_version else call.analysis_json,
+        "analysis_version": {
+            "id": latest_version.id,
+            "number": latest_version.version_number,
+            "status": latest_version.status,
+            "published": call.published_analysis_version_id == latest_version.id,
+        }
+        if latest_version
+        else None,
+        "cdr_match": {
+            "status": cdr_match.status,
+            "method": cdr_match.match_method,
+            "candidate_count": cdr_match.candidate_count,
+            "uniqueid": cdr_match.uniqueid,
+            "error": cdr_match.error_message,
+        }
+        if cdr_match
+        else None,
         "extraction": {
             "customer_name": extraction.customer_name,
             "phone": extraction.phone,
@@ -729,10 +899,115 @@ async def get_call(
                 for item in errors
             ],
         },
-        "audio_url": await storage.signed_url(call.object_key)
+        "audio_url": f"/api/v1/calls/{call.id}/audio"
         if security_settings is None or security_settings.audio_download_enabled
         else None,
     }
+
+
+@app.get("/api/v1/calls/{call_id}/audio")
+async def stream_call_audio(
+    call_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(current_principal)],
+    session: Annotated[AsyncSession, Depends(db_session)],
+    range_header: Annotated[str | None, Header(alias="Range")] = None,
+):
+    call = await session.scalar(
+        select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
+    )
+    if not call or (
+        principal.role in {Role.seller, Role.agent} and call.seller_email != principal.email
+    ):
+        raise HTTPException(status_code=404, detail="call_not_found")
+    security_settings = await session.scalar(
+        select(SecuritySetting).where(SecuritySetting.tenant_id == principal.tenant_id)
+    )
+    if security_settings and not security_settings.audio_download_enabled:
+        raise HTTPException(status_code=403, detail="audio_access_disabled")
+    head = await storage.head(call.object_key)
+    size = int(head["ContentLength"])
+    start, end = 0, size - 1
+    object_range = None
+    status_code = 200
+    if range_header:
+        if not range_header.startswith("bytes=") or "," in range_header:
+            raise HTTPException(status_code=416, detail="invalid_audio_range")
+        raw_start, _, raw_end = range_header.removeprefix("bytes=").partition("-")
+        try:
+            start = int(raw_start) if raw_start else 0
+            end = int(raw_end) if raw_end else size - 1
+        except ValueError as exc:
+            raise HTTPException(status_code=416, detail="invalid_audio_range") from exc
+        if start < 0 or end < start or start >= size:
+            raise HTTPException(status_code=416, detail="invalid_audio_range")
+        end = min(end, size - 1)
+        object_range = f"bytes={start}-{end}"
+        status_code = 206
+    result = await storage.open_stream(call.object_key, object_range)
+    body = result["Body"]
+
+    def chunks():
+        try:
+            while data := body.read(1024 * 256):
+                yield data
+        finally:
+            body.close()
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(end - start + 1),
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": "inline",
+    }
+    if status_code == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(
+        chunks(), status_code=status_code, media_type=call.mime_type, headers=headers
+    )
+
+
+@app.delete("/api/v1/calls/{call_id}", status_code=204)
+async def delete_call_end_to_end(
+    call_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(require_roles(Role.admin, Role.manager))],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call = await session.scalar(
+        select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
+    )
+    if not call:
+        raise HTTPException(status_code=404, detail="call_not_found")
+    job = RetentionJob(
+        tenant_id=principal.tenant_id,
+        call_id=call.id,
+        object_key=call.object_key,
+        status="running",
+    )
+    session.add(job)
+    await session.commit()
+    try:
+        await storage.delete(call.object_key)
+        add_audit(
+            session,
+            principal,
+            "call.deleted_end_to_end",
+            "call",
+            call.id,
+            {"source": "manual"},
+        )
+        await session.delete(call)
+        job.status = "completed"
+        job.completed_at = datetime.now(UTC)
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        stored_job = await session.get(RetentionJob, job.id)
+        if stored_job:
+            stored_job.status = "failed"
+            stored_job.error_message = str(exc)[:1000]
+            await session.commit()
+        raise HTTPException(status_code=503, detail="end_to_end_delete_failed") from exc
+    return Response(status_code=204)
 
 
 @app.post("/api/v1/calls/{call_id}/reprocess", status_code=202)
@@ -848,6 +1123,13 @@ async def edit_segment(
         segment.id,
         {"call_id": str(call.id), "reanalyze": payload.reanalyze},
     )
+    await snapshot_transcript(
+        session,
+        call,
+        source="human_correction",
+        actor_email=principal.email,
+        reason="segment content or role corrected",
+    )
     await session.commit()
     if payload.reanalyze:
         process_call.delay(str(call.id), str(principal.tenant_id), "reanalyze")
@@ -920,6 +1202,13 @@ async def update_speaker_roles(
         call.id,
         {"changed_segments": changed, "reanalyze": payload.reanalyze},
     )
+    await snapshot_transcript(
+        session,
+        call,
+        source="human_correction",
+        actor_email=principal.email,
+        reason="speaker roles corrected",
+    )
     await session.commit()
     if payload.reanalyze:
         process_call.delay(str(call.id), str(principal.tenant_id), "reanalyze")
@@ -943,6 +1232,12 @@ async def approve_message(
         raise HTTPException(status_code=404, detail="message_not_found")
     if draft.status != "pending_approval":
         raise HTTPException(status_code=409, detail="message_not_pending")
+    if draft.call_id:
+        source_call = await session.scalar(
+            select(Call).where(Call.id == draft.call_id, Call.tenant_id == principal.tenant_id)
+        )
+        if not source_call or not source_call.published_analysis_version_id:
+            raise HTTPException(status_code=409, detail="analysis_version_not_published")
     draft.status = "approved"
     draft.approved_by = principal.email
     await session.commit()
@@ -1158,53 +1453,6 @@ async def list_messages(
     }
 
 
-@app.get("/api/v1/integrations")
-async def list_integrations(
-    principal: Annotated[
-        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
-    ],
-    session: Annotated[AsyncSession, Depends(db_session)],
-):
-    rows = list(
-        (
-            await session.scalars(
-                select(Integration)
-                .where(Integration.tenant_id == principal.tenant_id)
-                .order_by(Integration.created_at.desc())
-            )
-        ).all()
-    )
-    return {
-        "items": [
-            {"id": row.id, "kind": row.kind, "name": row.name, "status": row.status} for row in rows
-        ]
-    }
-
-
-@app.post("/api/v1/integrations", status_code=201)
-async def create_integration(
-    payload: IntegrationCreate,
-    principal: Annotated[Principal, Depends(require_roles(Role.admin))],
-    session: Annotated[AsyncSession, Depends(db_session)],
-):
-    integration = Integration(
-        tenant_id=principal.tenant_id,
-        kind=payload.kind,
-        name=payload.name,
-        status="inactive",
-        encrypted_config=secret_box.encrypt(payload.config) if payload.config else None,
-    )
-    session.add(integration)
-    await session.commit()
-    await session.refresh(integration)
-    return {
-        "id": integration.id,
-        "kind": integration.kind,
-        "name": integration.name,
-        "status": integration.status,
-    }
-
-
 @app.get("/api/v1/admin/organization")
 async def organization_settings(
     principal: Annotated[Principal, Depends(current_principal)],
@@ -1315,14 +1563,6 @@ async def admin_overview(
         )
         or 0
     )
-    active_integrations = (
-        await session.scalar(
-            select(func.count(Integration.id)).where(
-                Integration.tenant_id == principal.tenant_id, Integration.status == "active"
-            )
-        )
-        or 0
-    )
     active_rules = (
         await session.scalar(
             select(func.count(AutomationRule.id)).where(
@@ -1338,7 +1578,6 @@ async def admin_overview(
         "used_minutes": round(float(seconds) / 60, 1),
         "storage_bytes": storage_bytes,
         "pending_tasks": pending_tasks,
-        "active_integrations": active_integrations,
         "active_rules": active_rules,
     }
 
@@ -1470,6 +1709,15 @@ async def update_admin_member(
         )
         if count <= 1:
             raise HTTPException(status_code=409, detail="last_admin_protected")
+    try:
+        await keycloak_admin.update_user_access(
+            member.email,
+            tenant_id=str(principal.tenant_id),
+            realm_role=payload.role,
+            enabled=payload.active,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="identity_provider_unavailable") from exc
     member.role = Role(payload.role)
     member.team_id = payload.team_id
     member.active = payload.active
@@ -1725,60 +1973,6 @@ async def update_admin_automation(
     return {"status": "updated"}
 
 
-@app.get("/api/v1/admin/integrations")
-async def admin_integrations(
-    principal: Annotated[Principal, Depends(require_roles(Role.admin))],
-    session: Annotated[AsyncSession, Depends(db_session)],
-):
-    return await list_integrations(principal, session)
-
-
-@app.post("/api/v1/admin/integrations", status_code=201)
-async def create_admin_integration(
-    payload: IntegrationCreate,
-    principal: Annotated[Principal, Depends(require_roles(Role.admin))],
-    session: Annotated[AsyncSession, Depends(db_session)],
-):
-    result = await create_integration(payload, principal, session)
-    add_audit(
-        session,
-        principal,
-        "integration.created",
-        "integration",
-        result["id"],
-        {"name": payload.name, "kind": payload.kind},
-    )
-    await session.commit()
-    return result
-
-
-@app.patch("/api/v1/admin/integrations/{integration_id}")
-async def update_admin_integration(
-    integration_id: uuid.UUID,
-    payload: IntegrationStatusPatch,
-    principal: Annotated[Principal, Depends(require_roles(Role.admin))],
-    session: Annotated[AsyncSession, Depends(db_session)],
-):
-    integration = await session.scalar(
-        select(Integration).where(
-            Integration.id == integration_id, Integration.tenant_id == principal.tenant_id
-        )
-    )
-    if not integration:
-        raise HTTPException(status_code=404, detail="integration_not_found")
-    integration.status = payload.status
-    add_audit(
-        session,
-        principal,
-        "integration.toggled",
-        "integration",
-        integration.id,
-        {"status": integration.status},
-    )
-    await session.commit()
-    return {"status": integration.status}
-
-
 @app.get("/api/v1/admin/ai-settings")
 async def admin_ai_settings(
     principal: Annotated[Principal, Depends(require_roles(Role.admin))],
@@ -1887,12 +2081,7 @@ async def admin_audit_logs(
     }
 
 
-@app.get("/api/v1/calls/{call_id}/export.pdf")
-async def export_call_pdf(
-    call_id: uuid.UUID,
-    principal: Annotated[Principal, Depends(current_principal)],
-    session: Annotated[AsyncSession, Depends(db_session)],
-):
+async def _export_source(call_id: uuid.UUID, principal: Principal, session: AsyncSession):
     call = await session.scalar(
         select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
     )
@@ -1909,7 +2098,165 @@ async def export_call_pdf(
             )
         ).all()
     )
-    content = render_call_pdf(call, segments, call.analysis_json, font_path=settings.pdf_font_path)
+    version = (
+        await session.get(AnalysisVersion, call.latest_analysis_version_id)
+        if call.latest_analysis_version_id
+        else None
+    )
+    return call, segments, version
+
+
+async def _record_artifact(
+    session: AsyncSession,
+    call: Call,
+    version: AnalysisVersion | None,
+    format_name: str,
+    content: bytes,
+) -> None:
+    if version is None:
+        return
+    await session.execute(
+        select(AnalysisVersion.id).where(AnalysisVersion.id == version.id).with_for_update()
+    )
+    checksum = hashlib.sha256(content).hexdigest()
+    existing = await session.scalar(
+        select(ArtifactVersion.id).where(
+            ArtifactVersion.analysis_version_id == version.id,
+            ArtifactVersion.format == format_name,
+            ArtifactVersion.checksum == checksum,
+        )
+    )
+    if existing:
+        return
+    number = (
+        await session.scalar(
+            select(func.max(ArtifactVersion.version_number)).where(
+                ArtifactVersion.analysis_version_id == version.id,
+                ArtifactVersion.format == format_name,
+            )
+        )
+        or 0
+    ) + 1
+    session.add(
+        ArtifactVersion(
+            tenant_id=call.tenant_id,
+            call_id=call.id,
+            analysis_version_id=version.id,
+            format=format_name,
+            version_number=number,
+            checksum=checksum,
+        )
+    )
+    await session.commit()
+
+
+@app.get("/api/v1/calls/{call_id}/export.txt")
+async def export_call_txt(
+    call_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(current_principal)],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call, segments, version = await _export_source(call_id, principal, session)
+    state = version.status if version else "legacy_unversioned"
+    lines = [
+        "مکالمه‌بان — متن کامل تماس",
+        f"فایل: {call.original_file_name}",
+        f"وضعیت خروجی: {state}",
+        f"نسخه تحلیل: {version.version_number if version else '—'}",
+        "",
+    ]
+    for row in segments:
+        start = "—" if row.start_seconds is None else f"{row.start_seconds:.1f}"
+        lines.append(f"[{start}] {row.speaker_role} ({row.speaker_label}): {row.content}")
+    content = "\n".join(lines).encode("utf-8")
+    await _record_artifact(session, call, version, "txt", content)
+    return Response(
+        content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="call-{call.id}.txt"'},
+    )
+
+
+@app.get("/api/v1/calls/{call_id}/export.json")
+async def export_call_json(
+    call_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(current_principal)],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call, segments, version = await _export_source(call_id, principal, session)
+    payload = {
+        "schema_version": "mokalemeban-call-export-v1",
+        "call": _call_read(call).model_dump(mode="json"),
+        "version": {
+            "id": version.id if version else None,
+            "number": version.version_number if version else None,
+            "status": version.status if version else "legacy_unversioned",
+        },
+        "transcript": [
+            {
+                "position": row.position,
+                "speaker": row.speaker_label,
+                "role": row.speaker_role,
+                "start": row.start_seconds,
+                "end": row.end_seconds,
+                "text": row.content,
+            }
+            for row in segments
+        ],
+        "analysis": version.analysis_json if version else call.analysis_json,
+    }
+    content = json.dumps(jsonable_encoder(payload), ensure_ascii=False, indent=2).encode("utf-8")
+    await _record_artifact(session, call, version, "json", content)
+    return Response(
+        content,
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="call-{call.id}.json"'},
+    )
+
+
+@app.get("/api/v1/calls/{call_id}/export.html")
+async def export_call_html(
+    call_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(current_principal)],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call, segments, version = await _export_source(call_id, principal, session)
+    analysis = version.analysis_json if version else call.analysis_json or {}
+    transcript = "".join(
+        "<article><b>"
+        + html.escape(row.speaker_role)
+        + "</b><time>"
+        + ("—" if row.start_seconds is None else f"{row.start_seconds:.1f}")
+        + "</time><p>"
+        + html.escape(row.content)
+        + "</p></article>"
+        for row in segments
+    )
+    summary = html.escape(str(analysis.get("executive_summary", "—")))
+    state = html.escape(version.status if version else "legacy_unversioned")
+    document = f"""<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>گزارش تماس</title>
+<style>body{{font-family:Tahoma,Arial;max-width:950px;margin:auto;padding:2rem;color:#172b3a}}header,article{{border:1px solid #dce5e9;border-radius:12px;padding:1rem;margin:.7rem 0}}time{{float:left;color:#63777f}}.draft{{background:#fff3cd;padding:.7rem}}</style></head>
+<body><header><h1>مکالمه‌بان — گزارش تماس</h1><p>{html.escape(call.original_file_name)}</p><p class="draft">وضعیت نسخه: {state}</p></header><section><h2>خلاصه</h2><p>{summary}</p></section><section><h2>متن کامل</h2>{transcript}</section></body></html>"""
+    content = document.encode("utf-8")
+    await _record_artifact(session, call, version, "html", content)
+    return Response(
+        content,
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="call-{call.id}.html"'},
+    )
+
+
+@app.get("/api/v1/calls/{call_id}/export.pdf")
+async def export_call_pdf(
+    call_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(current_principal)],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call, segments, version = await _export_source(call_id, principal, session)
+    analysis = version.analysis_json if version else call.analysis_json
+    content = render_call_pdf(call, segments, analysis, font_path=settings.pdf_font_path)
+    await _record_artifact(session, call, version, "pdf", content)
     return Response(
         content,
         media_type="application/pdf",
@@ -1923,24 +2270,9 @@ async def export_call_excel(
     principal: Annotated[Principal, Depends(current_principal)],
     session: Annotated[AsyncSession, Depends(db_session)],
 ):
-    call = await session.scalar(
-        select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
-    )
-    if not call or (
-        principal.role in {Role.seller, Role.agent} and call.seller_email != principal.email
-    ):
-        raise HTTPException(status_code=404, detail="call_not_found")
+    call, segments, version = await _export_source(call_id, principal, session)
     extraction = await session.scalar(
         select(CallExtraction).where(CallExtraction.call_id == call.id)
-    )
-    segments = list(
-        (
-            await session.scalars(
-                select(TranscriptSegment)
-                .where(TranscriptSegment.call_id == call.id)
-                .order_by(TranscriptSegment.position)
-            )
-        ).all()
     )
     tasks = list((await session.scalars(select(Task).where(Task.call_id == call.id))).all())
     segment_payload = [
@@ -1962,9 +2294,10 @@ async def export_call_excel(
     content = render_call_xlsx(
         _call_read(call, extraction).model_dump(mode="json"),
         segment_payload,
-        call.analysis_json,
+        version.analysis_json if version else call.analysis_json,
         task_payload,
     )
+    await _record_artifact(session, call, version, "xlsx", content)
     return Response(
         content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2246,6 +2579,338 @@ async def accuracy_status(
     }
 
 
+@app.get("/api/v1/calls/{call_id}/versions")
+async def list_call_versions(
+    call_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(current_principal)],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call = await session.scalar(
+        select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
+    )
+    if not call or (
+        principal.role in {Role.seller, Role.agent} and call.seller_email != principal.email
+    ):
+        raise HTTPException(status_code=404, detail="call_not_found")
+    transcripts = list(
+        (
+            await session.scalars(
+                select(TranscriptVersion)
+                .where(TranscriptVersion.call_id == call.id)
+                .order_by(TranscriptVersion.version_number.desc())
+            )
+        ).all()
+    )
+    analyses = list(
+        (
+            await session.scalars(
+                select(AnalysisVersion)
+                .where(AnalysisVersion.call_id == call.id)
+                .order_by(AnalysisVersion.version_number.desc())
+            )
+        ).all()
+    )
+    reviews = {
+        row.analysis_version_id: row
+        for row in (
+            await session.scalars(select(ReviewCase).where(ReviewCase.call_id == call.id))
+        ).all()
+    }
+    return {
+        "latest_analysis_version_id": call.latest_analysis_version_id,
+        "reviewed_analysis_version_id": call.reviewed_analysis_version_id,
+        "published_analysis_version_id": call.published_analysis_version_id,
+        "transcript_versions": [
+            {
+                "id": row.id,
+                "version": row.version_number,
+                "source": row.source,
+                "created_by": row.created_by,
+                "reason": row.change_reason,
+                "created_at": row.created_at,
+            }
+            for row in transcripts
+        ],
+        "analysis_versions": [
+            {
+                "id": row.id,
+                "transcript_version_id": row.transcript_version_id,
+                "version": row.version_number,
+                "status": row.status,
+                "confidence": row.confidence,
+                "evidence_validated": row.evidence_validated,
+                "outcome": row.outcome,
+                "score": row.score,
+                "model": row.analysis_model,
+                "prompt_version": row.prompt_version,
+                "review_id": reviews[row.id].id if row.id in reviews else None,
+                "review_reasons": reviews[row.id].reasons_json if row.id in reviews else [],
+                "created_at": row.created_at,
+            }
+            for row in analyses
+        ],
+    }
+
+
+@app.post("/api/v1/calls/{call_id}/transcript-versions", status_code=201)
+async def create_transcript_snapshot(
+    call_id: uuid.UUID,
+    payload: TranscriptVersionCreate,
+    principal: Annotated[
+        Principal,
+        Depends(require_roles(Role.admin, Role.manager, Role.supervisor, Role.agent, Role.seller)),
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call = await session.scalar(
+        select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
+    )
+    if not call or (
+        principal.role in {Role.seller, Role.agent} and call.seller_email != principal.email
+    ):
+        raise HTTPException(status_code=404, detail="call_not_found")
+    version = await snapshot_transcript(
+        session,
+        call,
+        source="human_snapshot",
+        actor_email=principal.email,
+        reason=payload.reason,
+    )
+    await session.commit()
+    return {"id": version.id, "version": version.version_number}
+
+
+@app.post("/api/v1/calls/{call_id}/analysis-versions", status_code=202)
+async def queue_analysis_version(
+    call_id: uuid.UUID,
+    payload: AnalysisVersionCreate,
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call = await session.scalar(
+        select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
+    )
+    if not call:
+        raise HTTPException(status_code=404, detail="call_not_found")
+    call.status = CallStatus.queued
+    add_audit(
+        session,
+        principal,
+        "analysis.version_requested",
+        "call",
+        call.id,
+        {"reason": payload.reason},
+    )
+    await session.commit()
+    process_call.delay(str(call.id), str(principal.tenant_id), "reanalyze")
+    return {"status": "queued"}
+
+
+@app.get("/api/v1/calls/{call_id}/versions/{version_id}/diff")
+async def diff_call_version(
+    call_id: uuid.UUID,
+    version_id: uuid.UUID,
+    principal: Annotated[Principal, Depends(current_principal)],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    call = await session.scalar(
+        select(Call).where(Call.id == call_id, Call.tenant_id == principal.tenant_id)
+    )
+    selected = await session.scalar(
+        select(AnalysisVersion).where(
+            AnalysisVersion.id == version_id,
+            AnalysisVersion.call_id == call_id,
+            AnalysisVersion.tenant_id == principal.tenant_id,
+        )
+    )
+    latest = await session.get(AnalysisVersion, call.latest_analysis_version_id) if call else None
+    if not call or not selected or not latest:
+        raise HTTPException(status_code=404, detail="analysis_version_not_found")
+    old = selected.analysis_json or {}
+    new = latest.analysis_json or {}
+    keys = sorted(set(old) | set(new))
+    return {
+        "from_version_id": selected.id,
+        "to_version_id": latest.id,
+        "changes": [
+            {"field": key, "before": old.get(key), "after": new.get(key)}
+            for key in keys
+            if old.get(key) != new.get(key)
+        ],
+    }
+
+
+@app.get("/api/v1/reviews")
+async def list_reviews(
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+    status_filter: Annotated[str | None, Query(alias="status", max_length=32)] = None,
+    reason: Annotated[str | None, Query(max_length=80)] = None,
+    reviewer: Annotated[str | None, Query(max_length=320)] = None,
+):
+    conditions = [ReviewCase.tenant_id == principal.tenant_id]
+    if status_filter:
+        conditions.append(ReviewCase.status == status_filter)
+    if reviewer:
+        conditions.append(ReviewCase.assignee_email == reviewer)
+    rows = (
+        await session.execute(
+            select(ReviewCase, Call, AnalysisVersion)
+            .join(Call, Call.id == ReviewCase.call_id)
+            .join(AnalysisVersion, AnalysisVersion.id == ReviewCase.analysis_version_id)
+            .where(*conditions)
+            .order_by(ReviewCase.created_at.desc())
+            .limit(200)
+        )
+    ).all()
+    if reason:
+        rows = [row for row in rows if reason in (row[0].reasons_json or [])]
+    return {
+        "items": [
+            {
+                "id": review.id,
+                "call_id": call.id,
+                "file_name": call.original_file_name,
+                "seller_email": call.seller_email,
+                "customer_name": call.customer_name,
+                "status": review.status,
+                "reasons": review.reasons_json,
+                "assignee_email": review.assignee_email,
+                "analysis_version": version.version_number,
+                "confidence": version.confidence,
+                "outcome": version.outcome,
+                "score": version.score,
+                "created_at": review.created_at,
+            }
+            for review, call, version in rows
+        ]
+    }
+
+
+async def _perform_review_action(
+    review_id: uuid.UUID,
+    action: str,
+    principal: Principal,
+    session: AsyncSession,
+    note: str | None,
+    assignee_email: str | None = None,
+):
+    review = await session.scalar(
+        select(ReviewCase).where(
+            ReviewCase.id == review_id, ReviewCase.tenant_id == principal.tenant_id
+        )
+    )
+    if not review:
+        raise HTTPException(status_code=404, detail="review_not_found")
+    call = await session.scalar(
+        select(Call).where(Call.id == review.call_id, Call.tenant_id == principal.tenant_id)
+    )
+    if not call:
+        raise HTTPException(status_code=404, detail="call_not_found")
+    if action in {"approve", "publish"} and call.seller_email == principal.email:
+        raise HTTPException(status_code=403, detail="self_review_not_allowed")
+    if action == "assign" and assignee_email:
+        normalized_assignee = assignee_email.strip().lower()
+        assignee = await session.scalar(
+            select(Membership).where(
+                Membership.tenant_id == principal.tenant_id,
+                Membership.email == normalized_assignee,
+                Membership.active.is_(True),
+                Membership.role.in_({Role.admin, Role.manager, Role.supervisor}),
+            )
+        )
+        if not assignee:
+            raise HTTPException(status_code=422, detail="reviewer_not_eligible")
+        review.assignee_email = normalized_assignee
+    try:
+        await transition_review(
+            session,
+            review,
+            call,
+            action=action,
+            actor_email=principal.email,
+            note=note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    add_audit(session, principal, f"review.{action}", "review", review.id, {"note": note})
+    await session.commit()
+    return {"status": review.status, "review_id": review.id}
+
+
+@app.post("/api/v1/reviews/{review_id}/assign")
+async def assign_review(
+    review_id: uuid.UUID,
+    payload: ReviewAssignRequest,
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    return await _perform_review_action(
+        review_id,
+        "assign",
+        principal,
+        session,
+        payload.note,
+        payload.assignee_email or principal.email,
+    )
+
+
+@app.post("/api/v1/reviews/{review_id}/approve")
+async def approve_review(
+    review_id: uuid.UUID,
+    payload: ReviewActionRequest,
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    return await _perform_review_action(review_id, "approve", principal, session, payload.note)
+
+
+@app.post("/api/v1/reviews/{review_id}/reject")
+async def reject_review(
+    review_id: uuid.UUID,
+    payload: ReviewActionRequest,
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    return await _perform_review_action(review_id, "reject", principal, session, payload.note)
+
+
+@app.post("/api/v1/reviews/{review_id}/request-changes")
+async def request_review_changes(
+    review_id: uuid.UUID,
+    payload: ReviewActionRequest,
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    return await _perform_review_action(
+        review_id, "request_changes", principal, session, payload.note
+    )
+
+
+@app.post("/api/v1/reviews/{review_id}/publish")
+async def publish_review(
+    review_id: uuid.UUID,
+    payload: ReviewActionRequest,
+    principal: Annotated[
+        Principal, Depends(require_roles(Role.admin, Role.manager, Role.supervisor))
+    ],
+    session: Annotated[AsyncSession, Depends(db_session)],
+):
+    return await _perform_review_action(review_id, "publish", principal, session, payload.note)
+
+
 @app.get("/api/v1/admin/glossary")
 async def list_glossary(
     principal: Annotated[
@@ -2372,6 +3037,8 @@ async def issabel_settings(
         "file_stability_seconds": settings.issabel_file_stability_seconds,
         "allowed_extensions": sorted(settings.issabel_extensions),
         "quarantine_path": settings.issabel_quarantine_path,
+        "cdr_configured": bool(settings.issabel_cdr_database_url),
+        "cdr_table": settings.issabel_cdr_table,
     }
 
 
@@ -2381,11 +3048,16 @@ async def test_issabel_settings(
 ):
     if settings.issabel_import_mode in {"local", "shared_folder"}:
         path = Path(settings.issabel_recordings_path).expanduser()
+        try:
+            cdr_ok = await cdr_matcher.health()
+        except (SQLAlchemyError, OSError):
+            cdr_ok = False
         return {
-            "ok": path.is_dir(),
+            "ok": path.is_dir() and cdr_ok,
             "mode": settings.issabel_import_mode,
             "path": str(path),
             "readable": path.is_dir(),
+            "cdr": "ok" if cdr_ok else "unavailable",
         }
     if settings.issabel_import_mode == "sftp":
         return {"ok": False, "mode": "sftp", "error": "sftp_puller_not_installed"}

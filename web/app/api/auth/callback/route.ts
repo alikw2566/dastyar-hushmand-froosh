@@ -1,12 +1,13 @@
 import { cookies } from "next/headers";
+import { oidcClientId, oidcExternalIssuer, oidcInternalIssuer } from "../../../oidc-config";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  const issuer = process.env.OIDC_ISSUER;
-  const tokenIssuer = process.env.OIDC_INTERNAL_ISSUER ?? issuer;
-  const clientId = process.env.OIDC_CLIENT_ID ?? "mokalemeban-web";
+  const issuer = oidcExternalIssuer();
+  const tokenIssuer = oidcInternalIssuer();
+  const clientId = oidcClientId();
   const appUrl = process.env.APP_URL ?? url.origin;
   const jar = await cookies();
   const expectedState = jar.get("mokalemeban_oauth_state")?.value;
@@ -36,7 +37,7 @@ export async function GET(request: Request) {
   });
   if (tokens.refresh_token) {
     jar.set("mokalemeban_refresh_token", tokens.refresh_token, {
-      httpOnly: true, sameSite: "strict", secure, path: "/api/auth", maxAge: 60 * 60 * 8,
+      httpOnly: true, sameSite: "strict", secure, path: "/", maxAge: 60 * 60 * 8,
     });
   }
   jar.delete("mokalemeban_oauth_state");

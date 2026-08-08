@@ -20,16 +20,16 @@
 ## امنیت و نگهداری
 
 - سیاست RLS جدول‌های عملیاتی جدید اضافه شده، اما اجرای integration test واقعی PostgreSQL برای cross-tenant هنوز باید در Release Gate ثبت شود.
-- Compose فعلی reverse proxy/TLS ندارد و Keycloak را با `start-dev` و بدون persistence production اجرا می‌کند.
+- Keycloak اکنون PostgreSQL پایدار دارد، اما Compose توسعه‌ای هنوز reverse proxy/TLS ندارد و `start-dev` است؛ محیط مقصد باید TLS و hostname نهایی را اعمال کند.
 - rate limit اجرایی backend، WAF و abuse protection کامل نشده‌اند.
 - retention days در تنظیمات ذخیره می‌شود، ولی purge زمان‌بندی‌شده PostgreSQL/MinIO و حذف سرتاسری مشتری کامل نیست.
 - backup داخلی رمزنگاری‌شده نیست و secret scanner همه قالب‌های سفارشی را تضمین نمی‌کند.
 - metrics فعلی حداقلی است؛ مانیتورینگ/alert خارجی و ارسال `ALERT_*` آماده نیست.
 
-## محصول و اتصال‌ها
+## محصول
 
-- تعریف Integration و ذخیره config وجود دارد، اما registry اجرایی CRM/تلفن/پیام خالی است؛ تست اتصال، sync، delivery، webhook signature و retry واقعی وجود ندارد.
-- تأیید message draft الزاماً پیام را به SMS/WhatsApp/Email خارجی ارسال نمی‌کند.
+- قابلیت اتصال عمومی CRM، Webhook و ارسال خارجی SMS/WhatsApp/Email از دامنه فعلی محصول حذف شده است.
+- پیام‌ها فقط پیش‌نویس داخلی هستند و از سامانه به اپراتور خارجی ارسال نمی‌شوند.
 - جست‌وجوی معنایی pgvector و پاسخ دارای citation کامل نشده است؛ جست‌وجوی فعلی عمدتاً فیلتر/متن است.
 - مقایسه پیشرفته فروشندگان و برنامه مربیگری خودکار هنوز نیازمند اعتبارسنجی KPI واقعی است.
 - پرداخت آنلاین و اپ موبایل مستقل خارج از نسخه پایلوت هستند.
@@ -40,7 +40,7 @@
 - تاریخ/مبلغ مبهم عمداً ممکن است `null` بماند؛ سیستم نباید برای پرکردن گزارش داده جعل کند.
 - PDF فارسی به فونت نصب‌شده/`PDF_FONT_PATH` و viewer مقصد وابسته است و باید چاپ تست شود.
 - Export بزرگ در همان API process ساخته می‌شود و background export/job storage جدا ندارد.
-- حالت سبک `web npm run dev` از D1/R2 محلی استفاده می‌کند و معادل backend کامل Docker نیست.
+- اجرای تنها `web npm run dev` داده جایگزین محلی ندارد و بدون FastAPI عملیاتی نیست.
 
 ## Release Gate فعلی
 

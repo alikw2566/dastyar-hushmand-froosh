@@ -14,7 +14,6 @@
 - ffprobe/ffmpeg روی ورودی Watcher/Worker و عدم overwrite صوت اصلی؛
 - نام object پاک‌سازی‌شده و namespace دارای tenant/call؛
 - URL امضاشده MinIO با عمر پیش‌فرض ۱۵ دقیقه؛
-- رمزنگاری config اتصال‌ها با Fernet در صورت استفاده؛
 - audit برای عملیات مدیریتی و correction history برای ویرایش transcript؛
 - prompt صریح برای نادیده‌گرفتن دستور داخل مکالمه و evidence validation؛
 - CORS قابل تنظیم و نه wildcard پیش‌فرض؛
@@ -23,11 +22,10 @@
 ## Release blockers و مسئولیت استقرار
 
 1. migration و SQL bootstrap برای جدول‌های عملیاتی جدید RLS می‌سازند، اما Release Gate فقط پس از اجرای تست cross-tenant روی همه آن‌ها پاس می‌شود.
-2. Compose فعلی TLS reverse proxy ندارد و Keycloak با `start-dev` بدون persistence production اجرا می‌شود. آن را اینترنتی نکنید.
+2. Keycloak پایدار شده، اما Compose توسعه‌ای TLS reverse proxy ندارد و با `start-dev` اجرا می‌شود. پیش از دسترسی شبکه‌ای، TLS و hostname نهایی را روی محیط مقصد فعال کنید.
 3. `API_RATE_LIMIT_PER_MINUTE` در config وجود دارد، ولی middleware اجرایی rate limit در API دیده نمی‌شود. WAF/proxy limit و سپس تست لازم است.
 4. تنظیم `retention_days` ذخیره می‌شود، اما job حذف زمان‌بندی‌شده صوت/داده کامل اثبات نشده است.
 5. `ALERT_*` در نمونه env به معنی ارسال alert نیست؛ backend alert sender عملیاتی ندارد.
-6. connectorهای CRM/پیام اجرایی ثبت نشده‌اند؛ status فعال نباید مجوز ارسال خارجی تلقی شود.
 
 ## Secretها
 

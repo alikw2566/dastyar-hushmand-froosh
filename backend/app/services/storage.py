@@ -57,5 +57,21 @@ class ObjectStorage:
             ExpiresIn=expires_seconds,
         )
 
+    async def head(self, key: str) -> dict:
+        return await asyncio.to_thread(self.client.head_object, Bucket=self.bucket, Key=key)
+
+    async def open_stream(self, key: str, byte_range: str | None = None):
+        params = {"Bucket": self.bucket, "Key": key}
+        if byte_range:
+            params["Range"] = byte_range
+        return await asyncio.to_thread(self.client.get_object, **params)
+
+    async def delete(self, key: str) -> None:
+        await asyncio.to_thread(self.client.delete_object, Bucket=self.bucket, Key=key)
+
+    async def health(self) -> bool:
+        await asyncio.to_thread(self.client.head_bucket, Bucket=self.bucket)
+        return True
+
 
 storage = ObjectStorage()

@@ -46,6 +46,18 @@ ISSABEL_RECORDINGS_PATH=/recordings
 
 ## الگوی نام فایل و metadata
 
+### تطبیق read-only با CDR
+
+برای پایلوت، یک کاربر فقط‌خواندنی در MariaDB ایزابل بسازید که فقط مجوز `SELECT` روی جدول CDR داشته باشد. سپس URL را فقط در secret محیط سرور قرار دهید:
+
+```dotenv
+ISSABEL_CDR_DATABASE_URL=mysql+asyncmy://cdr_reader:PASSWORD@ISSABEL_IP:3306/asteriskcdrdb
+ISSABEL_CDR_TABLE=cdr
+ISSABEL_CDR_MATCH_WINDOW_SECONDS=180
+```
+
+سیستم ابتدا `uniqueid` را تطبیق می‌دهد و در نبود آن از زمان، مبدأ و مقصد استفاده می‌کند. نتیجه برای هر تماس با یکی از وضعیت‌های `matched`، `ambiguous` یا `unmatched` ذخیره می‌شود. خطای موقت CDR باعث حذف فایل صوتی نمی‌شود؛ تماس با fallback نام فایل وارد می‌شود و خطای تطبیق برای بازبینی باقی می‌ماند.
+
 Parser روی الگوهای رایج Asterisk fallback دارد و در صورت ناشناخته‌بودن نام، فایل را از دست نمی‌دهد. برای قالب اختصاصی، regex دارای named group تعریف کنید:
 
 ```dotenv

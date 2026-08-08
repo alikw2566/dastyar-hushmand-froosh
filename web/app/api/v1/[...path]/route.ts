@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+import { validAccessToken } from "../../../oidc-session";
 import { handleLocalApi } from "../../../local-api";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
@@ -12,7 +12,7 @@ async function forward(request: Request, context: RouteContext) {
   upstream.search = incomingUrl.search;
 
   const headers = new Headers();
-  const token = (await cookies()).get("mokalemeban_access_token")?.value;
+  const token = await validAccessToken();
   const authorization = request.headers.get("authorization") ?? (token ? `Bearer ${token}` : null);
   if (authorization) headers.set("authorization", authorization);
   for (const name of ["content-type", "idempotency-key", "x-recording-consent"]) {

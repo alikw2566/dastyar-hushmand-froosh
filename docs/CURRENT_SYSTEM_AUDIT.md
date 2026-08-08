@@ -9,7 +9,7 @@
 
 ## معماری فعلی
 
-- `web/`: Vinext/Next.js، TypeScript، رابط فارسی RTL، اجرای کامل از طریق FastAPI و حالت توسعه محلی D1/R2.
+- `web/`: Vinext/Next.js، TypeScript، رابط فارسی RTL و اجرای داده فقط از طریق FastAPI.
 - `backend/`: FastAPI، SQLAlchemy async، PostgreSQL، Alembic و RLS اجباری برای جدول‌های tenantدار.
 - `worker`: Celery/Redis با `acks_late`، retry/backoff، ثبت رخداد و خطای پردازش.
 - `watcher`: پایش recursive پوشه Local/Shared Folder ایزابل، پایداری فایل، SHA-256، جلوگیری از تکرار، قرنطینه و heartbeat. SFTP عمداً readiness نمی‌گیرد و پیاده‌سازی‌شده معرفی نمی‌شود.
@@ -50,7 +50,7 @@
 - Docker روی میزبان ممیزی نصب نبود؛ full-stack، migration upgrade، MinIO/PostgreSQL restore و E2E واقعی Issabel اجرا نشده‌اند.
 - آزمون symlink در Windows بدون مجوز ساخت symlink skip می‌شود، هرچند guard کد و تست آن وجود دارد.
 - soak واقعی ۲۴ساعته/هفت‌روزه و load علیه deployment اجرا نشده است.
-- connector اجرایی CRM/SMS/WhatsApp/Email، SFTP، semantic search کامل، purge زمان‌بندی‌شده retention، TLS/Keycloak production persistence و rate-limit middleware هنوز Release Blocker هستند.
-- حالت Local D1/R2 پردازش AI، PDF/Excel و Retry واقعی ندارد؛ UI این قابلیت‌ها را غیرفعال و محدودیت را صریح نمایش می‌دهد.
+- اتصال عمومی CRM/SMS/WhatsApp/Email از دامنه محصول حذف شده است. SFTP، semantic search کامل، purge زمان‌بندی‌شده retention، TLS/Keycloak production persistence و rate-limit middleware هنوز Release Blocker هستند.
+- مسیر Local D1/R2 فقط برای Preview توسعه فعال است؛ محیط سرور و پایلوت صرفاً از FastAPI/PostgreSQL استفاده می‌کنند.
 
 جزئیات Release Blockerها در `KNOWN_LIMITATIONS.md` و معیارهای قابل تکرار در `TESTING.md` ثبت شده‌اند. هیچ عدد تخمینی به‌عنوان نتیجه واقعی منتشر نمی‌شود.

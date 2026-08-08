@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "@fontsource-variable/vazirmatn";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,13 +15,13 @@ export const metadata: Metadata = {
     locale: "fa_IR",
     title: "مکالمه‌بان | هوش مکالمه برای تیم فروش",
     description: "از هر تماس، یک تصمیم بهتر",
-    images: [{ url: "/og.png", width: 1672, height: 941, alt: "مکالمه‌بان، هوش مکالمه برای تیم فروش" }],
+    images: [{ url: "/og-redesign.png", width: 1672, height: 941, alt: "مکالمه‌بان، دستیار هوشمند فروش" }],
   },
   twitter: {
     card: "summary_large_image",
     title: "مکالمه‌بان | هوش مکالمه برای تیم فروش",
     description: "از هر تماس، یک تصمیم بهتر",
-    images: ["/og.png"],
+    images: ["/og-redesign.png"],
   },
   icons: {
     icon: "/favicon.svg",

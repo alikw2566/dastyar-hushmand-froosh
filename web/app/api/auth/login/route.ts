@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { oidcClientId, oidcExternalIssuer, oidcInternalIssuer } from "../../../oidc-config";
 
 function base64Url(bytes: Uint8Array) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -9,10 +10,23 @@ export async function GET(request: Request) {
   const registration = requestUrl.searchParams.get("mode") === "register";
   const requestedReturnTo = requestUrl.searchParams.get("returnTo") ?? "/";
   const returnTo = requestedReturnTo.startsWith("/") && !requestedReturnTo.startsWith("//") ? requestedReturnTo : "/";
-  const issuer = process.env.OIDC_ISSUER;
+  const issuer = oidcExternalIssuer();
   if (!issuer) return Response.json({ error: "oidc_not_configured" }, { status: 503 });
-  const clientId = process.env.OIDC_CLIENT_ID ?? "mokalemeban-web";
+  const clientId = oidcClientId();
   const appUrl = process.env.APP_URL ?? new URL(request.url).origin;
+  const healthIssuer = oidcInternalIssuer();
+  try {
+    const discovery = await fetch(`${healthIssuer?.replace(/\/$/, "")}/.well-known/openid-configuration`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!discovery.ok) throw new Error("identity service is not ready");
+  } catch {
+    const failed = new URL("/auth", appUrl);
+    failed.searchParams.set("error", "identity_service_unavailable");
+    if (requestedReturnTo.includes("view=admin")) failed.searchParams.set("admin", "1");
+    return Response.redirect(failed);
+  }
   const state = base64Url(crypto.getRandomValues(new Uint8Array(24)));
   const verifier = base64Url(crypto.getRandomValues(new Uint8Array(48)));
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));

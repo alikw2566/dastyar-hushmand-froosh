@@ -93,12 +93,17 @@ def restore_backup(
     compose_file: Path | None = None,
     restore_postgres: bool = False,
     restore_minio: bool = False,
+    restore_keycloak: bool = False,
     postgres_service: str = "postgres",
     postgres_user: str = "mokalemeban",
     postgres_database: str = "mokalemeban",
     minio_service: str = "minio",
+    keycloak_postgres_service: str = "keycloak-postgres",
+    keycloak_postgres_user: str = "keycloak",
+    keycloak_postgres_database: str = "keycloak",
     confirm_database: str | None = None,
     confirm_object_storage: str | None = None,
+    confirm_keycloak_database: str | None = None,
 ) -> dict[str, Any]:
     archive = archive.resolve()
     target = target.resolve()
@@ -118,6 +123,9 @@ def restore_backup(
         "object_storage_available": bool(
             manifest.get("artifacts", {}).get("object_storage")
         ),
+        "keycloak_database_available": bool(
+            manifest.get("artifacts", {}).get("keycloak")
+        ),
         "integrity_verified": True,
     }
     if not apply:
@@ -126,9 +134,13 @@ def restore_backup(
         raise ValueError("--confirm-database must exactly match --postgres-database")
     if restore_minio and confirm_object_storage != "RESTORE":
         raise ValueError("--confirm-object-storage RESTORE is required")
-    if (restore_postgres or restore_minio) and compose_file is None:
+    if restore_keycloak and confirm_keycloak_database != keycloak_postgres_database:
+        raise ValueError(
+            "--confirm-keycloak-database must exactly match --keycloak-postgres-database"
+        )
+    if (restore_postgres or restore_minio or restore_keycloak) and compose_file is None:
         raise ValueError("--compose-file is required for service restore")
-    for service in (postgres_service, minio_service):
+    for service in (postgres_service, minio_service, keycloak_postgres_service):
         if not SERVICE.fullmatch(service):
             raise ValueError("invalid Docker service name")
 
@@ -195,6 +207,27 @@ def restore_backup(
             data,
         )
         summary["object_storage_restored"] = True
+    if restore_keycloak:
+        dump = artifact_bytes(archive, "artifacts/keycloak-postgres.dump")
+        run_restore(
+            compose
+            + [
+                "exec",
+                "-T",
+                keycloak_postgres_service,
+                "pg_restore",
+                "--clean",
+                "--if-exists",
+                "--no-owner",
+                "--no-acl",
+                "-U",
+                keycloak_postgres_user,
+                "-d",
+                keycloak_postgres_database,
+            ],
+            dump,
+        )
+        summary["keycloak_database_restored"] = True
     return summary
 
 
@@ -210,12 +243,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--compose-file", type=Path)
     parser.add_argument("--restore-postgres", action="store_true")
     parser.add_argument("--restore-minio", action="store_true")
+    parser.add_argument("--restore-keycloak", action="store_true")
     parser.add_argument("--postgres-service", default="postgres")
     parser.add_argument("--postgres-user", default="mokalemeban")
     parser.add_argument("--postgres-database", default="mokalemeban")
     parser.add_argument("--minio-service", default="minio")
+    parser.add_argument("--keycloak-postgres-service", default="keycloak-postgres")
+    parser.add_argument("--keycloak-postgres-user", default="keycloak")
+    parser.add_argument("--keycloak-postgres-database", default="keycloak")
     parser.add_argument("--confirm-database")
     parser.add_argument("--confirm-object-storage")
+    parser.add_argument("--confirm-keycloak-database")
     return parser.parse_args(argv)
 
 
@@ -231,12 +269,17 @@ def main(argv: list[str] | None = None) -> int:
             compose_file=args.compose_file,
             restore_postgres=args.restore_postgres,
             restore_minio=args.restore_minio,
+            restore_keycloak=args.restore_keycloak,
             postgres_service=args.postgres_service,
             postgres_user=args.postgres_user,
             postgres_database=args.postgres_database,
             minio_service=args.minio_service,
+            keycloak_postgres_service=args.keycloak_postgres_service,
+            keycloak_postgres_user=args.keycloak_postgres_user,
+            keycloak_postgres_database=args.keycloak_postgres_database,
             confirm_database=args.confirm_database,
             confirm_object_storage=args.confirm_object_storage,
+            confirm_keycloak_database=args.confirm_keycloak_database,
         )
     except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
         print(

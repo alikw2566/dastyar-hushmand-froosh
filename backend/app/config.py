@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     issabel_filename_pattern: str = ""
     issabel_default_tenant_id: str | None = None
     issabel_temporary_extensions: str = ".tmp,.part,.partial,.download"
+    issabel_cdr_database_url: str = ""
+    issabel_cdr_table: str = "cdr"
+    issabel_cdr_match_window_seconds: int = Field(default=180, ge=30, le=3600)
+
+    @field_validator("issabel_cdr_table")
+    @classmethod
+    def validate_cdr_table(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized.replace("_", "").isalnum():
+            raise ValueError("ISSABEL_CDR_TABLE must be a simple SQL identifier")
+        return normalized
 
     audio_min_duration_seconds: float = 1.0
     audio_target_sample_rate: int = 16000

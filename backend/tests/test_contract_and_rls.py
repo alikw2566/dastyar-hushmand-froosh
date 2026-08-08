@@ -59,6 +59,35 @@ def test_calls_api_exposes_server_side_management_filters():
     assert "/api/v1/calls/{call_id}/speaker-roles" in app.openapi()["paths"]
 
 
+def test_versioning_review_and_protected_artifact_contracts_exist():
+    paths = app.openapi()["paths"]
+    expected = {
+        "/api/v1/calls/{call_id}/versions",
+        "/api/v1/calls/{call_id}/transcript-versions",
+        "/api/v1/calls/{call_id}/analysis-versions",
+        "/api/v1/calls/{call_id}/versions/{version_id}/diff",
+        "/api/v1/reviews",
+        "/api/v1/reviews/{review_id}/assign",
+        "/api/v1/reviews/{review_id}/approve",
+        "/api/v1/reviews/{review_id}/reject",
+        "/api/v1/reviews/{review_id}/request-changes",
+        "/api/v1/reviews/{review_id}/publish",
+        "/api/v1/calls/{call_id}/audio",
+        "/api/v1/calls/{call_id}/export.txt",
+        "/api/v1/calls/{call_id}/export.html",
+        "/api/v1/calls/{call_id}/export.json",
+        "/api/v1/reports/team",
+    }
+    assert expected <= set(paths)
+    operation_ids = [
+        operation["operationId"]
+        for path in paths.values()
+        for operation in path.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    ]
+    assert len(operation_ids) == len(set(operation_ids))
+
+
 def test_issabel_settings_contract_is_explicitly_environment_read_only():
     schema = app.openapi()["paths"]["/api/v1/admin/issabel-settings"]
     assert set(schema) == {"get"}

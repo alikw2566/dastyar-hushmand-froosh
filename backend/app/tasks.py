@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
+from botocore.exceptions import BotoCoreError, ClientError
 from celery import Celery
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from .config import get_settings
-from .database import tenant_session
+from .database import SessionFactory, tenant_session
 from .models import (
+    AiSetting,
+    AuditLog,
     Call,
     CallExtraction,
     CallOutcome,
@@ -21,12 +25,15 @@ from .models import (
     ExtractionEvidence,
     GlossaryTerm,
     MessageDraft,
+    Organization,
     PipelineEvent,
     ProcessingError,
+    RetentionJob,
+    ScorecardVersion,
     Task,
     TranscriptSegment,
 )
-from .services.ai import SalesAIProvider, get_ai_provider
+from .services.ai import OpenAISalesProvider, SalesAIProvider
 from .services.audio import preprocess_audio, validate_audio
 from .services.evidence import validate_analysis_evidence
 from .services.followups import build_followup_spec
@@ -37,6 +44,7 @@ from .services.persian import normalize_persian
 from .services.pipeline import PipelineState, RetryPolicy, classify_exception, ensure_transition
 from .services.roles import apply_roles, assign_speaker_roles
 from .services.storage import ObjectStorage, storage
+from .services.versioning import create_analysis_version, snapshot_transcript
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -50,6 +58,12 @@ celery_app.conf.update(
     task_soft_time_limit=settings.processing_stage_timeout_seconds,
     task_time_limit=settings.processing_stage_timeout_seconds + 30,
 )
+celery_app.conf.beat_schedule = {
+    "daily-retention": {
+        "task": "app.tasks.run_retention",
+        "schedule": 24 * 60 * 60,
+    }
+}
 
 
 class RetryablePipelineError(RuntimeError):
@@ -64,6 +78,66 @@ def process_call(self, call_id: str, tenant_id: str, mode: str = "resume"):
         return asyncio.run(_process_call(UUID(call_id), UUID(tenant_id), mode=mode))
     except RetryablePipelineError as exc:
         raise self.retry(exc=exc, countdown=exc.delay_seconds)
+
+
+@celery_app.task(name="app.tasks.run_retention")
+def run_retention():
+    return asyncio.run(_run_retention())
+
+
+async def _run_retention() -> dict[str, int]:
+    async with SessionFactory() as system_session:
+        organizations = list((await system_session.scalars(select(Organization))).all())
+    deleted = 0
+    failed = 0
+    for organization in organizations:
+        cutoff = datetime.now(UTC) - timedelta(days=organization.retention_days)
+        async for session in tenant_session(str(organization.id)):
+            calls = list(
+                (
+                    await session.scalars(
+                        select(Call).where(
+                            Call.tenant_id == organization.id,
+                            Call.created_at < cutoff,
+                        )
+                    )
+                ).all()
+            )
+            for call in calls:
+                job = RetentionJob(
+                    tenant_id=organization.id,
+                    call_id=call.id,
+                    object_key=call.object_key,
+                    status="running",
+                )
+                session.add(job)
+                await session.commit()
+                try:
+                    await storage.delete(call.object_key)
+                    await session.delete(call)
+                    job.status = "completed"
+                    job.completed_at = datetime.now(UTC)
+                    session.add(
+                        AuditLog(
+                            tenant_id=organization.id,
+                            actor_email="retention-worker",
+                            action="call.retention_deleted",
+                            entity_type="call",
+                            entity_id=str(call.id),
+                            metadata_json={"retention_days": organization.retention_days},
+                        )
+                    )
+                    await session.commit()
+                    deleted += 1
+                except (BotoCoreError, ClientError, SQLAlchemyError, OSError) as exc:
+                    await session.rollback()
+                    job = await session.get(RetentionJob, job.id)
+                    if job:
+                        job.status = "failed"
+                        job.error_message = str(exc)[:1000]
+                        await session.commit()
+                    failed += 1
+    return {"deleted": deleted, "failed": failed}
 
 
 async def _transition(
@@ -324,7 +398,6 @@ async def _process_call(
 ):
     if mode not in {"resume", "reanalyze", "full"}:
         raise ValueError("invalid processing mode")
-    provider = provider or get_ai_provider()
     object_storage = object_storage or storage
     async for session in tenant_session(str(tenant_id)):
         call = await session.scalar(
@@ -336,6 +409,25 @@ async def _process_call(
             return {"status": "already_completed"}
         stage = "queued"
         try:
+            ai_setting = await session.scalar(
+                select(AiSetting).where(AiSetting.tenant_id == tenant_id)
+            )
+            scorecard = await session.scalar(
+                select(ScorecardVersion).where(
+                    ScorecardVersion.tenant_id == tenant_id,
+                    ScorecardVersion.active.is_(True),
+                )
+            )
+            effective_provider = provider or OpenAISalesProvider(
+                provider=ai_setting.provider if ai_setting else "openai",
+                transcription_model=(
+                    ai_setting.transcription_model if ai_setting else settings.transcription_model
+                ),
+                analysis_model=(
+                    ai_setting.analysis_model if ai_setting else settings.analysis_model
+                ),
+                scorecard=scorecard.criteria_json if scorecard else [],
+            )
             glossary_rows = list(
                 (
                     await session.scalars(
@@ -388,7 +480,7 @@ async def _process_call(
                 measured = calculate_metrics(segments)
                 stage = "analyzing"
                 analysis = await asyncio.to_thread(
-                    provider.analyze, segments, measured, glossary_payload
+                    effective_provider.analyze, segments, measured, glossary_payload
                 )
                 stage = "validating"
                 analysis, checks = validate_analysis_evidence(analysis, segments)
@@ -420,7 +512,9 @@ async def _process_call(
                     )
                     await session.commit()
                     stage = "transcribing"
-                    segments = await asyncio.to_thread(provider.transcribe, processed_path)
+                    segments = await asyncio.to_thread(
+                        effective_provider.transcribe, processed_path
+                    )
                     if not segments:
                         raise RuntimeError("empty_transcript")
                     segments = apply_glossary(segments, glossary)
@@ -440,7 +534,7 @@ async def _process_call(
                     await session.commit()
                     stage = "analyzing"
                     analysis = await asyncio.to_thread(
-                        provider.analyze, segments, measured, glossary_payload
+                        effective_provider.analyze, segments, measured, glossary_payload
                     )
                     refined = assign_speaker_roles(segments, analysis.role_assessment)
                     segments = apply_roles(segments, refined)
@@ -461,13 +555,34 @@ async def _process_call(
             call.analysis_json = analysis.model_dump(mode="json")
             call.duration_seconds = measured.get("call_span_seconds")
             await _persist_extraction(session, call, analysis, checks)
+            transcript_version = await snapshot_transcript(
+                session,
+                call,
+                source="reanalyze" if mode == "reanalyze" else "ai",
+                actor_email="ai-worker",
+                reason=f"pipeline processing mode={mode}",
+            )
+            _analysis_version, review_case = await create_analysis_version(
+                session,
+                call,
+                transcript_version,
+                analysis,
+                checks,
+                provider=ai_setting.provider if ai_setting else "openai",
+                transcription_model=(
+                    ai_setting.transcription_model if ai_setting else settings.transcription_model
+                ),
+                analysis_model=(
+                    ai_setting.analysis_model if ai_setting else settings.analysis_model
+                ),
+                prompt_version=settings.analysis_prompt_version,
+                scorecard_version_id=scorecard.id if scorecard else None,
+            )
             await _transition(session, call, CallStatus.creating_followups)
             stage = "creating_followups"
             await _create_followups(session, call, analysis)
             final_status = (
-                CallStatus.review_needed
-                if analysis.outcome_confidence < 0.75
-                else CallStatus.completed
+                CallStatus.review_needed if review_case.review_required else CallStatus.completed
             )
             await _transition(session, call, final_status)
             call.last_successful_stage = final_status.value

@@ -169,15 +169,6 @@ export async function ensureCoreSchema(db: D1Database) {
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS integrations (
-      id TEXT PRIMARY KEY,
-      organization_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'inactive',
-      config_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )`),
     db.prepare(`CREATE TABLE IF NOT EXISTS ai_settings (
       organization_id TEXT PRIMARY KEY,
       provider TEXT NOT NULL DEFAULT 'openai',

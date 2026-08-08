@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { getChatGPTUser, getPrivateOidcUser } from "./chatgpt-auth";
+import { hasRefreshToken } from "./oidc-session";
 import { getLocalUser } from "./local-auth";
 import { SalesDashboard } from "./sales-dashboard";
 
@@ -13,6 +14,7 @@ export const metadata: Metadata = {
 
 export default async function Home() {
   const user = (await getPrivateOidcUser()) ?? (await getChatGPTUser()) ?? (await getLocalUser());
+  if (!user && await hasRefreshToken()) redirect("/api/auth/refresh?returnTo=%2F");
   if (!user) redirect("/auth");
 
   return (

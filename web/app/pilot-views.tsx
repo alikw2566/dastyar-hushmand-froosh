@@ -139,6 +139,15 @@ type CallDetailData = {
   followups?: TaskItem[];
   audio_url?: string | null;
   capabilities?: DetailCapabilities;
+  cdr_match?: { status: string; method: string; candidate_count: number; uniqueid?: string | null; error?: string | null } | null;
+};
+
+type VersionData = {
+  latest_analysis_version_id?: string | null;
+  reviewed_analysis_version_id?: string | null;
+  published_analysis_version_id?: string | null;
+  transcript_versions: Array<{ id: string; version: number; source: string; created_by?: string | null; reason?: string | null; created_at: string }>;
+  analysis_versions: Array<{ id: string; version: number; status: string; confidence?: number | null; evidence_validated: boolean; outcome?: string | null; score?: number | null; model: string; prompt_version: string; review_id?: string | null; review_reasons: string[]; created_at: string }>;
 };
 
 const statusLabel: Record<string, string> = {
@@ -361,11 +370,19 @@ export function FollowupsView({ onOpenCall, onToast, onCountChanged }: { onOpenC
 
 export function CallDetailView({ callId, isAdmin, readOnly = false, canReprocess = false, onBack, onToast }: { callId: string; isAdmin: boolean; readOnly?: boolean; canReprocess?: boolean; onBack: () => void; onToast: (value: string) => void }) {
   const [data, setData] = useState<CallDetailData | null>(null);
+  const [versions, setVersions] = useState<VersionData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    try { setData(await requestJson<CallDetailData>("/api/v1/calls/" + encodeURIComponent(callId))); }
+    try {
+      const encoded = encodeURIComponent(callId);
+      const [detail, versionResult] = await Promise.all([
+        requestJson<CallDetailData>("/api/v1/calls/" + encoded),
+        requestJson<VersionData>("/api/v1/calls/" + encoded + "/versions").catch(() => null),
+      ]);
+      setData(detail); setVersions(versionResult);
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : "جزئیات تماس دریافت نشد"); }
     finally { setLoading(false); }
   }, [callId]);
@@ -394,6 +411,8 @@ export function CallDetailView({ callId, isAdmin, readOnly = false, canReprocess
   const evidence = normalizedEvidence.filter((item) => item.validation_status !== "unsupported");
   const unsupportedCount = normalizedEvidence.length - evidence.length;
   const capabilities = data.capabilities ?? {};
+  const latestVersion = versions?.analysis_versions?.[0];
+  const isPublished = Boolean(latestVersion && versions?.published_analysis_version_id === latestVersion.id);
   const pdfEnabled = capabilities.pdf_export !== false;
   const callExcelEnabled = capabilities.excel_export !== false;
   const reanalysisEnabled = capabilities.reanalysis !== false;
@@ -420,18 +439,24 @@ export function CallDetailView({ callId, isAdmin, readOnly = false, canReprocess
   return <>
     <button className="live-back" onClick={onBack}>→ بازگشت به تماس‌ها</button>
     <div className="live-heading"><div><span>{call.id}</span><h1>{call.customer_name || call.original_file_name}</h1><p>{statusLabel[call.status] ?? call.status} · {formatDate(call.created_at)}</p></div><div className="heading-actions">
+      <a className="pilot-button secondary" href={"/api/v1/calls/" + encodeURIComponent(callId) + "/export.txt"}>متن TXT</a>
+      <a className="pilot-button secondary" href={"/api/v1/calls/" + encodeURIComponent(callId) + "/export.html"} target="_blank">گزارش HTML</a>
+      <a className="pilot-button secondary" href={"/api/v1/calls/" + encodeURIComponent(callId) + "/export.json"}>داده JSON</a>
       {pdfEnabled ? <a className="pilot-button secondary" href={"/api/v1/calls/" + encodeURIComponent(callId) + "/export.pdf"} target="_blank">گزارش PDF</a> : <button className="secondary" disabled title="به سرویس گزارش‌ساز نیاز دارد">PDF غیرفعال</button>}
       {callExcelEnabled ? <a className="pilot-button secondary" href={"/api/v1/calls/" + encodeURIComponent(callId) + "/export.xlsx"}>گزارش Excel</a> : <button className="secondary" disabled title="به سرویس گزارش‌ساز نیاز دارد">Excel غیرفعال</button>}
       <button className="secondary" onClick={() => void load()}>تازه‌سازی</button>
       {!readOnly && canReprocess && <button disabled={!reanalysisEnabled} title={reanalysisEnabled ? "" : "در حالت محلی Worker متصل نیست"} onClick={() => void action("reanalyze")}>تحلیل مجدد</button>}
       {!readOnly && canReprocess && call.status === "failed" && <button disabled={!retryEnabled} onClick={() => void action("retry")}>Retry</button>}
     </div></div>
+    {latestVersion && <section className={"version-banner " + (isPublished ? "published" : "draft")}><div><strong>{isPublished ? "نسخه رسمی منتشرشده" : "پیش‌نویس AI — تأییدنشده"}</strong><span>تحلیل نسخه {fa(latestVersion.version)} · متن نسخه {fa(versions?.transcript_versions?.[0]?.version ?? "—")} · مدل {latestVersion.model}</span></div><div><span>اطمینان {latestVersion.confidence == null ? "—" : fa(Math.round(latestVersion.confidence * 100)) + "٪"}</span><span>{latestVersion.evidence_validated ? "شواهد معتبر" : "نیازمند بررسی شواهد"}</span></div></section>}
+    {versions && versions.analysis_versions.length > 1 && <details className="version-history"><summary>تاریخچه و مقایسه نسخه‌ها ({fa(versions.analysis_versions.length)})</summary><div>{versions.analysis_versions.map((version) => <article key={version.id}><span>نسخه {fa(version.version)}</span><b>{version.status}</b><small>{formatDate(version.created_at)} · {version.prompt_version}</small>{version.id !== versions.latest_analysis_version_id && <a href={"/api/v1/calls/" + encodeURIComponent(callId) + "/versions/" + version.id + "/diff"} target="_blank">مشاهده اختلاف با آخرین نسخه</a>}</article>)}</div></details>}
     {(!pdfEnabled || !callExcelEnabled || !reanalysisEnabled) && <CapabilityNotice>این صفحه در حالت محلی فقط اصلاح متن و نقش‌ها را ذخیره می‌کند. PDF، Excel، Retry و تحلیل مجدد با اتصال Backend/Worker فعال می‌شوند.</CapabilityNotice>}
     <AudioPlayer source={data.audio_url} duration={call.duration_seconds} downloadable={capabilities.audio_download !== false} />
     <section className="pilot-detail-grid">
       <DetailCard title="اطلاعات تماس"><DataGrid values={[
         ["فروشنده", call.seller_name ?? call.seller_email],["تاریخ", formatDate(call.created_at)],["جهت", call.direction === "inbound" ? "ورودی" : call.direction === "outbound" ? "خروجی" : call.direction],
         ["مدت", formatDuration(call.duration_seconds)],["منبع", call.source],["نام فایل", call.original_file_name],["مسیر منبع", call.source_path],
+        ["تطبیق CDR", data.cdr_match ? data.cdr_match.status : "ثبت نشده"],["Unique ID", data.cdr_match?.uniqueid],
       ]} /></DetailCard>
       <DetailCard title="خلاصه مدیریتی"><div className="score-summary"><strong>{score == null ? "—" : fa(score)}</strong><span>امتیاز کل از ۱۰۰</span></div><p className="detail-copy">{summary || "خلاصه‌ای تأییدشده ثبت نشده است."}</p></DetailCard>
     </section>

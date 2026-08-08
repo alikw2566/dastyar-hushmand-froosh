@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -57,6 +58,19 @@ def test_first_admin_environment_validation_and_stable_tenant_id():
     assert str(configured.tenant_id) == "11111111-1111-4111-8111-111111111111"
     with pytest.raises(ValueError, match="DEFAULT_TENANT_ID"):
         parse_bootstrap_environment({**values, "DEFAULT_TENANT_ID": "not-a-uuid"})
+
+
+def test_keycloak_realm_requires_totp_and_compose_uses_persistent_database():
+    root = Path(__file__).parents[2]
+    realm = json.loads(
+        (root / "deploy" / "keycloak" / "mokalemeban-realm.json").read_text(encoding="utf-8")
+    )
+    totp = next(item for item in realm["requiredActions"] if item["alias"] == "CONFIGURE_TOTP")
+    assert totp["enabled"] is True
+    assert totp["defaultAction"] is True
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "keycloak-postgres-data:/var/lib/postgresql/data" in compose
+    assert "KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak" in compose
 
 
 @pytest.mark.asyncio

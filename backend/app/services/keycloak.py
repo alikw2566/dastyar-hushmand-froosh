@@ -27,6 +27,15 @@ class KeycloakAdmin:
         response.raise_for_status()
         return response.json()["access_token"]
 
+    async def health(self) -> bool:
+        base = self.settings.keycloak_admin_url.rstrip("/")
+        async with self.client_factory(timeout=5) as client:
+            response = await client.get(
+                f"{base}/realms/{self.settings.keycloak_realm}/.well-known/openid-configuration"
+            )
+            response.raise_for_status()
+        return True
+
     async def _find_user_id(
         self, client: httpx.AsyncClient, base: str, headers: dict, email: str
     ) -> str:
@@ -122,6 +131,9 @@ class KeycloakAdmin:
                 )
                 user_response.raise_for_status()
                 user_data = user_response.json()
+                existing_tenants = list((user_data.get("attributes") or {}).get("tenant_id", []))
+                if existing_tenants and tenant_id not in existing_tenants:
+                    raise RuntimeError("keycloak_user_belongs_to_another_tenant")
                 attributes = dict(user_data.get("attributes") or {})
                 attributes["tenant_id"] = [tenant_id]
                 update_response = await client.put(
@@ -144,6 +156,47 @@ class KeycloakAdmin:
                 )
                 if mapping_response.status_code not in (204, 409):
                     mapping_response.raise_for_status()
+
+    async def update_user_access(
+        self,
+        email: str,
+        *,
+        tenant_id: str,
+        realm_role: str,
+        enabled: bool,
+    ) -> None:
+        base = self.settings.keycloak_admin_url.rstrip("/")
+        managed_roles = {"admin", "manager", "supervisor", "agent", "seller", "viewer"}
+        async with self.client_factory(timeout=15) as client:
+            token = await self._token(client, base)
+            headers = {"authorization": f"Bearer {token}"}
+            user_id = await self._find_user_id(client, base, headers, email)
+            endpoint = f"{base}/admin/realms/{self.settings.keycloak_realm}/users/{user_id}"
+            response = await client.get(endpoint, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            existing_tenants = list((data.get("attributes") or {}).get("tenant_id", []))
+            if existing_tenants != [tenant_id]:
+                raise RuntimeError("keycloak_tenant_mismatch")
+            update = await client.put(endpoint, headers=headers, json={**data, "enabled": enabled})
+            update.raise_for_status()
+            mapping_url = f"{endpoint}/role-mappings/realm"
+            mappings = await client.get(mapping_url, headers=headers)
+            mappings.raise_for_status()
+            removable = [row for row in mappings.json() if row.get("name") in managed_roles]
+            if removable:
+                removed = await client.request(
+                    "DELETE", mapping_url, headers=headers, json=removable
+                )
+                removed.raise_for_status()
+            role_response = await client.get(
+                f"{base}/admin/realms/{self.settings.keycloak_realm}/roles/{realm_role}",
+                headers=headers,
+            )
+            role_response.raise_for_status()
+            assigned = await client.post(mapping_url, headers=headers, json=[role_response.json()])
+            if assigned.status_code not in (204, 409):
+                assigned.raise_for_status()
 
 
 keycloak_admin = KeycloakAdmin()

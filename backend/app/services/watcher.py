@@ -17,9 +17,10 @@ from sqlalchemy.exc import IntegrityError
 
 from ..config import Settings
 from ..database import tenant_session
-from ..models import Call, CallStatus, SourceImport, WatcherHeartbeat
+from ..models import Call, CallStatus, CdrMatch, SourceImport, WatcherHeartbeat
 from ..tasks import process_call
 from .audio import validate_audio
+from .cdr import cdr_matcher
 from .filename_parser import CallFileMetadata, parse_issabel_filename
 from .pipeline import PipelineFailure
 from .storage import storage
@@ -256,10 +257,17 @@ class DatabaseWatcherRepository:
         detected_at: datetime,
         metadata: CallFileMetadata,
     ) -> ImportResult:
+        cdr = await cdr_matcher.match(metadata)
+        cdr_row = cdr.row or {}
+        agent_extension = metadata.agent_extension or cdr_matcher.extension(
+            cdr_row.get("dstchannel") or cdr_row.get("channel")
+        )
         async for session in self.session_provider(str(self.tenant_id)):
             call = Call(
                 tenant_id=self.tenant_id,
-                external_id=metadata.unique_call_id or f"issabel:{sha256}",
+                external_id=str(
+                    cdr_row.get("uniqueid") or metadata.unique_call_id or f"issabel:{sha256}"
+                ),
                 original_file_name=path.name,
                 object_key="pending",
                 mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
@@ -269,11 +277,12 @@ class DatabaseWatcherRepository:
                 source_hash=sha256,
                 detected_at=detected_at,
                 imported_at=datetime.now(UTC),
-                call_started_at=metadata.call_started_at,
-                caller_number=metadata.caller_number,
-                destination_number=metadata.destination_number,
+                call_started_at=cdr_row.get("calldate") or metadata.call_started_at,
+                caller_number=str(cdr_row.get("src") or metadata.caller_number or "") or None,
+                destination_number=str(cdr_row.get("dst") or metadata.destination_number or "")
+                or None,
                 extension=metadata.extension,
-                agent_extension=metadata.agent_extension,
+                agent_extension=agent_extension,
                 direction=metadata.direction,
                 queue_name=metadata.queue,
                 status=CallStatus.uploaded,
@@ -281,6 +290,22 @@ class DatabaseWatcherRepository:
             session.add(call)
             try:
                 await session.flush()
+                session.add(
+                    CdrMatch(
+                        tenant_id=self.tenant_id,
+                        call_id=call.id,
+                        status=cdr.status,
+                        match_method=cdr.method,
+                        candidate_count=cdr.candidates,
+                        uniqueid=str(cdr_row.get("uniqueid") or "") or None,
+                        cdr_json={
+                            key: str(value) if value is not None else None
+                            for key, value in cdr_row.items()
+                        }
+                        or None,
+                        error_message=cdr.error,
+                    )
+                )
                 with path.open("rb") as handle:
                     call.object_key = await storage.upload(
                         self.tenant_id, call.id, path.name, call.mime_type, handle

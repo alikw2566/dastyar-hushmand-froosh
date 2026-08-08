@@ -1,0 +1,143 @@
+راهنمای استقرار مکالمه‌بان — دستیار هوشمند فروش
+===================================================
+
+این راهنما برای واحد IT شرکت است.
+
+ساده‌ترین اجرای Windows
+------------------------
+
+روی فایل START_PROJECT.cmd دوبار کلیک کنید. راه‌انداز به‌ترتیب Docker، فایل
+تنظیمات، رمزهای امن، مدیر اولیه، اجرای کانتینرها و Health Check را مدیریت می‌کند
+و در پایان صفحه ورود را باز می‌کند. اگر Docker نصب نباشد، بدون تغییر سیستم متوقف
+می‌شود و راهنمای نصب را نمایش می‌دهد.
+
+1) پیش‌نیاز سرور
+-----------------
+
+- Ubuntu 22.04 یا 24.04 (پیشنهادشده)
+- Docker Engine و Docker Compose v2
+- حداقل 4 هسته CPU، رم 8 گیگابایت و فضای SSD پایدار
+- دسترسی خروجی HTTPS به OpenAI یا ارائه‌دهنده مدل سازگار
+- دسترسی شبکه به Issabel و پوشه ضبط مکالمات
+- دامنه و Reverse Proxy با HTTPS برای استفاده خارج از شبکه داخلی
+
+2) دریافت پروژه
+----------------
+
+git clone https://github.com/alikw2566/dastyar-hushmand-froosh.git
+cd dastyar-hushmand-froosh
+cp .env.example .env
+chmod 600 .env
+
+اگر پروژه به‌صورت پوشه تحویل شده است، وارد همان پوشه شوید و فقط دو فرمان
+آخر را اجرا کنید.
+
+3) تنظیم فایل .env
+-------------------
+
+فایل .env را باز کنید. هیچ مقدار پیش‌فرض change-me نباید در محیط واقعی
+باقی بماند. حداقل این متغیرها را با مقادیر امن و واقعی پر کنید:
+
+POSTGRES_PASSWORD=رمز-بلند-و-تصادفی
+S3_ACCESS_KEY=نام-غیرقابل-حدس
+S3_SECRET_KEY=رمز-بلند-و-تصادفی
+KEYCLOAK_ADMIN=نام-مدیر-سیستم
+KEYCLOAK_ADMIN_PASSWORD=رمز-بلند-و-تصادفی
+KEYCLOAK_DB_PASSWORD=رمز-بلند-و-تصادفی
+
+FIRST_ADMIN_EMAIL=ایمیل-مدیر-شرکت
+FIRST_ADMIN_PASSWORD=رمز-اولیه-مدیر
+FIRST_ADMIN_NAME=نام-مدیر
+DEFAULT_TENANT_NAME=نام شرکت
+DEFAULT_TENANT_ID=یک UUID ثابت
+ISSABEL_DEFAULT_TENANT_ID=همان UUID بالا
+
+OPENAI_API_KEY=کلید واقعی OpenAI
+SECRET_ENCRYPTION_KEY=کلید Fernet
+CORS_ORIGINS=https://دامنه-سامانه-شرکت
+
+ساخت UUID:
+
+uuidgen
+
+ساخت SECRET_ENCRYPTION_KEY:
+
+openssl rand -base64 32 | tr '+/' '-_'
+
+نکته: DEFAULT_TENANT_ID و ISSABEL_DEFAULT_TENANT_ID باید دقیقاً یکسان باشند.
+فایل .env محرمانه است و نباید وارد Git، پیام‌رسان یا ایمیل عمومی شود.
+
+4) اتصال Issabel
+-----------------
+
+پوشه ضبط تماس‌های Issabel باید ابتدا روی خود سرور برنامه به‌صورت SMB یا NFS
+mount شود. پیشنهاد می‌شود Issabel فقط فایل‌های کامل‌شده را در یک پوشه اختصاصی
+recordings-drop کپی کند و برنامه به کل پوشه spool دسترسی نداشته باشد.
+
+نمونه تنظیم در .env:
+
+ISSABEL_IMPORT_MODE=shared_folder
+ISSABEL_HOST_RECORDINGS_PATH=/mnt/issabel/recordings-drop
+ISSABEL_RECORDINGS_PATH=/recordings
+
+برای تطبیق CDR، یک کاربر MariaDB فقط-خواندنی بسازید که فقط مجوز SELECT روی
+جدول CDR دارد. سپس مقدار زیر را فقط در .env وارد کنید:
+
+ISSABEL_CDR_DATABASE_URL=mysql+asyncmy://cdr_reader:PASSWORD@ISSABEL_IP:3306/asteriskcdrdb
+ISSABEL_CDR_TABLE=cdr
+
+5) اجرای سرویس‌ها
+-----------------
+
+docker compose config
+docker compose up -d --build
+docker compose ps
+docker compose run --rm api python -m app.bootstrap_admin
+
+پس از مشاهده پیام created یا already_exists، مقدار FIRST_ADMIN_PASSWORD را از
+.env حذف کنید و سرویس‌ها را دوباره اجرا کنید:
+
+docker compose up -d
+
+6) بررسی سلامت
+---------------
+
+curl http://localhost:8000/health/live
+curl http://localhost:8000/health/ready
+curl http://localhost:8010/health/ready
+docker compose logs --since 15m api
+docker compose logs --since 15m worker
+docker compose logs --since 15m watcher
+
+پنل در حالت محلی از آدرس زیر قابل مشاهده است:
+
+http://SERVER-IP:3000
+
+7) الزامات استفاده واقعی
+-------------------------
+
+- برای استفاده خارج از شبکه داخلی، IT باید Nginx یا Traefik با HTTPS و دامنه
+  معتبر راه‌اندازی کند.
+- فقط پورت 443 باید عمومی باشد. پورت‌های 5432، 6379، 9000، 9001، 8000، 8010
+  و 8081 نباید عمومی باشند.
+- پیش از ورود تماس واقعی، با یک فایل WAV کوتاه و دارای رضایت، مسیر Shared Folder
+  و وضعیت Watcher را تست کنید.
+- از PostgreSQL، MinIO و Keycloak طبق docs/BACKUP_AND_RECOVERY.md نسخه پشتیبان
+  خارج از همان دیسک بگیرید.
+- برای پایلوت، 50 تماس واقعی اول باید بازبینی انسانی شوند.
+
+هشدار مهم
+----------
+
+هرگز دستور زیر را اجرا نکنید؛ داده‌های پایدار سرویس را حذف می‌کند:
+
+docker compose down -v
+
+برای توقف امن سرویس‌ها از این دستور استفاده کنید:
+
+docker compose stop
+
+مستندات تکمیلی:
+- docs/DEPLOYMENT.md
+- docs/ISSABEL_INTEGRATION.md
+- docs/BACKUP_AND_RECOVERY.md

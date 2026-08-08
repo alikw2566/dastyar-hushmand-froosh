@@ -80,11 +80,14 @@ async def current_principal(
             select(Membership).where(
                 Membership.tenant_id == tenant_id,
                 Membership.email == email,
-                Membership.active.is_(True),
             )
         )
-        if membership:
-            role = membership.role
+        if membership is None or not membership.active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="membership_inactive_or_missing",
+            )
+        role = membership.role
     return Principal(
         subject=claims["sub"],
         email=email,

@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "status": "DRY_RUN",
-  "generated_at": "2026-08-01T10:11:58.115921+00:00",
+  "generated_at": "2026-08-03T09:27:16.630250+00:00",
   "configuration": {
     "base_url": "http://localhost:8000",
     "scenario": "health",

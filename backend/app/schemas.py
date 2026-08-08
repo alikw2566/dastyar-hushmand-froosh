@@ -167,6 +167,10 @@ class CallRead(BaseModel):
     risk_flag: bool = False
     followup_required: bool = False
     followup_due_at: datetime | None = None
+    review_status: str | None = None
+    latest_analysis_version_id: UUID | None = None
+    reviewed_analysis_version_id: UUID | None = None
+    published_analysis_version_id: UUID | None = None
 
 
 class PaginatedCalls(BaseModel):
@@ -176,12 +180,6 @@ class PaginatedCalls(BaseModel):
     total: int = 0
     pages: int = 0
     next_cursor: str | None = None
-
-
-class IntegrationCreate(BaseModel):
-    kind: Literal["telephony", "crm", "webhook", "sms", "email", "whatsapp", "api"]
-    name: str = Field(min_length=2, max_length=180)
-    config: dict = Field(default_factory=dict)
 
 
 class ScoreCriterion(BaseModel):
@@ -248,16 +246,12 @@ class TeamPatch(BaseModel):
 class AutomationCreate(BaseModel):
     name: str = Field(min_length=2, max_length=200)
     event: Literal["call.completed", "call.failed", "score.low", "followup.overdue"]
-    action: Literal["task.create", "message.create", "manager.notify", "webhook.send"]
+    action: Literal["task.create", "message.create", "manager.notify"]
     mode: Literal["draft", "approval", "automatic"] = "approval"
 
 
 class EnabledPatch(BaseModel):
     enabled: bool
-
-
-class IntegrationStatusPatch(BaseModel):
-    status: Literal["active", "inactive"]
 
 
 class AiSettingsPatch(BaseModel):
@@ -296,6 +290,23 @@ class ReprocessRequest(BaseModel):
 class ProcessingAction(BaseModel):
     action: Literal["retry", "reanalyze", "full_reprocess", "quarantine", "resolve_error"]
     reason: str | None = Field(default=None, max_length=500)
+
+
+class ReviewActionRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class ReviewAssignRequest(BaseModel):
+    assignee_email: str | None = Field(default=None, max_length=320)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class TranscriptVersionCreate(BaseModel):
+    reason: str = Field(min_length=2, max_length=1000)
+
+
+class AnalysisVersionCreate(BaseModel):
+    reason: str = Field(min_length=2, max_length=1000)
 
 
 class GlossaryCreate(BaseModel):

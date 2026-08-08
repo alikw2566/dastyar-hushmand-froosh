@@ -192,16 +192,6 @@ export const messageDrafts = sqliteTable("message_drafts", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const integrations = sqliteTable("integrations", {
-  id: text("id").primaryKey(),
-  organizationId: text("organization_id").notNull(),
-  kind: text("kind", { enum: ["telephony", "crm", "webhook", "sms", "email", "whatsapp", "api"] }).notNull(),
-  name: text("name").notNull(),
-  status: text("status", { enum: ["active", "inactive", "error"] }).notNull().default("inactive"),
-  encryptedConfig: text("encrypted_config"),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
-
 export const scorecardVersions = sqliteTable("scorecard_versions", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id").notNull(),

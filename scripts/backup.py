@@ -179,6 +179,10 @@ def add_compose_artifacts(
     postgres_user: str,
     postgres_database: str,
     minio_service: str,
+    include_keycloak: bool = False,
+    keycloak_postgres_service: str = "keycloak-postgres",
+    keycloak_postgres_user: str = "keycloak",
+    keycloak_postgres_database: str = "keycloak",
 ) -> None:
     artifacts = staging / "artifacts"
     artifacts.mkdir(exist_ok=True)
@@ -215,6 +219,25 @@ def add_compose_artifacts(
                 "tar -C /data -cf - .",
             ),
             artifacts / "minio-data.tar",
+        )
+    if include_keycloak:
+        if not SERVICE.fullmatch(keycloak_postgres_service):
+            raise ValueError("invalid Keycloak PostgreSQL service name")
+        run_binary(
+            compose_command(
+                compose_file,
+                "exec",
+                "-T",
+                keycloak_postgres_service,
+                "pg_dump",
+                "--format=custom",
+                "--no-owner",
+                "--no-acl",
+                "-U",
+                keycloak_postgres_user,
+                keycloak_postgres_database,
+            ),
+            artifacts / "keycloak-postgres.dump",
         )
 
 
@@ -281,10 +304,14 @@ def create_backup(
     compose_file: Path | None = None,
     include_postgres: bool = False,
     include_minio: bool = False,
+    include_keycloak: bool = False,
     postgres_service: str = "postgres",
     postgres_user: str = "mokalemeban",
     postgres_database: str = "mokalemeban",
     minio_service: str = "minio",
+    keycloak_postgres_service: str = "keycloak-postgres",
+    keycloak_postgres_user: str = "keycloak",
+    keycloak_postgres_database: str = "keycloak",
 ) -> dict[str, Any]:
     output_dir = output_dir.resolve()
     for _, source in sources:
@@ -292,7 +319,7 @@ def create_backup(
             raise ValueError("output directory must not be inside a source directory")
     if retention_days < 1:
         raise ValueError("retention_days must be positive")
-    if (include_postgres or include_minio) and compose_file is None:
+    if (include_postgres or include_minio or include_keycloak) and compose_file is None:
         raise ValueError("--compose-file is required for Docker service backups")
 
     selected: list[tuple[Path, PurePosixPath]] = []
@@ -311,6 +338,7 @@ def create_backup(
         "excluded_files": exclusions,
         "include_postgres": include_postgres,
         "include_minio": include_minio,
+        "include_keycloak": include_keycloak,
         "retention_days": retention_days,
     }
     if dry_run:
@@ -337,6 +365,10 @@ def create_backup(
                 postgres_user,
                 postgres_database,
                 minio_service,
+                include_keycloak,
+                keycloak_postgres_service,
+                keycloak_postgres_user,
+                keycloak_postgres_database,
             )
         files = inventory(staging)
         manifest = {
@@ -353,6 +385,9 @@ def create_backup(
             "artifacts": {
                 "postgres": "artifacts/postgres.dump" if include_postgres else None,
                 "object_storage": "artifacts/minio-data.tar" if include_minio else None,
+                "keycloak": "artifacts/keycloak-postgres.dump"
+                if include_keycloak
+                else None,
             },
             "files": files,
         }
@@ -414,10 +449,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--compose-file", type=Path)
     parser.add_argument("--include-postgres", action="store_true")
     parser.add_argument("--include-minio", action="store_true")
+    parser.add_argument("--include-keycloak", action="store_true")
     parser.add_argument("--postgres-service", default="postgres")
     parser.add_argument("--postgres-user", default="mokalemeban")
     parser.add_argument("--postgres-database", default="mokalemeban")
     parser.add_argument("--minio-service", default="minio")
+    parser.add_argument("--keycloak-postgres-service", default="keycloak-postgres")
+    parser.add_argument("--keycloak-postgres-user", default="keycloak")
+    parser.add_argument("--keycloak-postgres-database", default="keycloak")
     return parser.parse_args(argv)
 
 
@@ -432,10 +471,14 @@ def main(argv: list[str] | None = None) -> int:
             compose_file=args.compose_file,
             include_postgres=args.include_postgres,
             include_minio=args.include_minio,
+            include_keycloak=args.include_keycloak,
             postgres_service=args.postgres_service,
             postgres_user=args.postgres_user,
             postgres_database=args.postgres_database,
             minio_service=args.minio_service,
+            keycloak_postgres_service=args.keycloak_postgres_service,
+            keycloak_postgres_user=args.keycloak_postgres_user,
+            keycloak_postgres_database=args.keycloak_postgres_database,
         )
         if args.prune_expired and not args.dry_run:
             summary["pruned_archives"] = prune_expired(

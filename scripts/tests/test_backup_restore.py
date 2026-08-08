@@ -55,6 +55,25 @@ class BackupRestoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             restore_backup(archive, self.root / "restored")
 
+    def test_keycloak_backup_requires_compose_and_is_reported(self):
+        with self.assertRaises(ValueError):
+            create_backup(
+                self.output,
+                [("fixture", self.source)],
+                dry_run=True,
+                include_keycloak=True,
+            )
+        compose = self.root / "compose.yml"
+        compose.write_text("services: {}\n", encoding="utf-8")
+        result = create_backup(
+            self.output,
+            [("fixture", self.source)],
+            dry_run=True,
+            include_keycloak=True,
+            compose_file=compose,
+        )
+        self.assertTrue(result["include_keycloak"])
+
 
 if __name__ == "__main__":
     unittest.main()

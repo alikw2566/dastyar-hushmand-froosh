@@ -9,6 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import openai
+from botocore.exceptions import BotoCoreError, ClientError
+from sqlalchemy.exc import DBAPIError, OperationalError
+
 
 class PipelineState(str, enum.Enum):
     discovered = "discovered"
@@ -181,6 +185,30 @@ def classify_exception(exc: Exception, stage: str) -> ErrorDescriptor:
         return exc.descriptor
     if str(exc) == "empty_transcript":
         return ERRORS["empty_transcript"]
+    if isinstance(exc, openai.APITimeoutError):
+        return ERRORS[
+            "transcription_timeout" if stage == "transcribing" else "analysis_unavailable"
+        ]
+    if isinstance(
+        exc,
+        (
+            openai.APIConnectionError,
+            openai.RateLimitError,
+            openai.InternalServerError,
+        ),
+    ):
+        return ERRORS[
+            "transcription_unavailable" if stage == "transcribing" else "analysis_unavailable"
+        ]
+    if isinstance(exc, (BotoCoreError, ClientError)):
+        return ERRORS["storage_unavailable"]
+    if isinstance(exc, (OperationalError, DBAPIError)):
+        return ErrorDescriptor(
+            "database_unavailable",
+            ErrorCategory.database,
+            True,
+            "database is temporarily unavailable",
+        )
     if isinstance(exc, (TimeoutError, ConnectionError)):
         code = (
             "transcription_timeout"

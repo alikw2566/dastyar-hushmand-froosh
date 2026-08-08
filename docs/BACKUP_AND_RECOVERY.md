@@ -14,7 +14,7 @@
 
 فایل‌های `.env`، private key، certificate key، credential و فایل دارای assignment شبیه secret به‌صورت دفاعی حذف و دلیل آن در manifest ثبت می‌شود. scanner تضمین ریاضی کشف همه قالب‌های اختصاصی secret نیست؛ archive را قبل از انتقال بازبینی کنید.
 
-Keycloak در Compose فعلی با `start-dev` و بدون volume/database پایدار جدا اجرا می‌شود. realm template قابل backup است، ولی userهای runtime Keycloak با این پشته تضمین‌شده backup نمی‌شوند. قبل از پایلوت مداوم، Keycloak را به PostgreSQL پایدار منتقل کنید یا export/restore رسمی آن را به runbook اضافه کنید.
+Keycloak روی PostgreSQL پایدار جداگانه اجرا می‌شود. برای حفظ کاربران، نقش‌ها، MFA و نشست‌های مدیریتی، گزینه `--include-keycloak` باید همراه backup کامل و گزینه `--restore-keycloak` همراه بازیابی آزمایشی استفاده شود.
 
 ## Dry-run
 
@@ -38,6 +38,7 @@ Keycloak در Compose فعلی با `start-dev` و بدون volume/database پا
   --compose-file docker-compose.yml `
   --include-postgres `
   --include-minio `
+  --include-keycloak `
   --retention-days 14
 ```
 
@@ -97,8 +98,10 @@ docker compose stop api worker watcher web
   --compose-file docker-compose.yml `
   --restore-postgres `
   --restore-minio `
+  --restore-keycloak `
   --confirm-database mokalemeban `
-  --confirm-object-storage RESTORE
+  --confirm-object-storage RESTORE `
+  --confirm-keycloak-database keycloak
 docker compose up -d api worker watcher web
 ```
 
