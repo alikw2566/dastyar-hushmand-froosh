@@ -1,9 +1,11 @@
 from functools import lru_cache
+from pathlib import Path
 from uuid import UUID
 
 from cryptography.fernet import Fernet
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 
 class Settings(BaseSettings):
@@ -48,8 +50,14 @@ class Settings(BaseSettings):
     issabel_sftp_port: int = 22
     issabel_sftp_username: str = ""
     issabel_sftp_password: str = ""
+    issabel_sftp_password_file: str = ""
     issabel_sftp_private_key: str = ""
+    issabel_sftp_known_hosts: str = "/run/secrets/issabel_known_hosts"
+    issabel_sftp_allow_insecure_host_key: bool = False
     issabel_sftp_remote_path: str = "/var/spool/asterisk/monitor"
+    issabel_sftp_staging_path: str = "/tmp/mokalemeban-sftp"
+    issabel_sftp_max_files_per_scan: int = Field(default=5000, ge=1, le=100_000)
+    issabel_sftp_max_depth: int = Field(default=8, ge=1, le=32)
     issabel_poll_interval: int = 30
     issabel_file_stability_seconds: int = 15
     issabel_allowed_extensions: str = ".wav,.mp3,.gsm"
@@ -58,16 +66,49 @@ class Settings(BaseSettings):
     issabel_default_tenant_id: str | None = None
     issabel_temporary_extensions: str = ".tmp,.part,.partial,.download"
     issabel_cdr_database_url: str = ""
+    issabel_cdr_host: str = ""
+    issabel_cdr_port: int = Field(default=3306, ge=1, le=65535)
+    issabel_cdr_username: str = ""
+    issabel_cdr_password: str = ""
+    issabel_cdr_password_file: str = ""
+    issabel_cdr_database: str = "asteriskcdrdb"
     issabel_cdr_table: str = "cdr"
+    issabel_cdr_recording_column: str = "recordingfile"
     issabel_cdr_match_window_seconds: int = Field(default=180, ge=30, le=3600)
 
-    @field_validator("issabel_cdr_table")
+    @field_validator("issabel_cdr_table", "issabel_cdr_recording_column")
     @classmethod
     def validate_cdr_table(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized.replace("_", "").isalnum():
             raise ValueError("ISSABEL_CDR_TABLE must be a simple SQL identifier")
         return normalized
+
+    @staticmethod
+    def _secret(value: str, file_path: str) -> str:
+        if file_path:
+            return Path(file_path).read_text(encoding="utf-8").strip()
+        return value
+
+    @property
+    def resolved_issabel_sftp_password(self) -> str:
+        return self._secret(self.issabel_sftp_password, self.issabel_sftp_password_file)
+
+    @property
+    def resolved_issabel_cdr_database_url(self) -> str | URL | None:
+        if self.issabel_cdr_database_url:
+            return self.issabel_cdr_database_url
+        if not self.issabel_cdr_host:
+            return None
+        return URL.create(
+            "mysql+asyncmy",
+            username=self.issabel_cdr_username or None,
+            password=self._secret(self.issabel_cdr_password, self.issabel_cdr_password_file)
+            or None,
+            host=self.issabel_cdr_host,
+            port=self.issabel_cdr_port,
+            database=self.issabel_cdr_database,
+        )
 
     audio_min_duration_seconds: float = 1.0
     audio_target_sample_rate: int = 16000
@@ -126,11 +167,23 @@ class Settings(BaseSettings):
                 UUID(self.issabel_default_tenant_id)
             except ValueError as exc:
                 raise ValueError("ISSABEL_DEFAULT_TENANT_ID must be a valid UUID") from exc
+        if self.issabel_import_mode == "sftp":
+            if not self.issabel_sftp_host or not self.issabel_sftp_username:
+                raise ValueError(
+                    "ISSABEL_SFTP_HOST and ISSABEL_SFTP_USERNAME are required in sftp mode"
+                )
+            if not self.issabel_sftp_known_hosts and not self.issabel_sftp_allow_insecure_host_key:
+                raise ValueError(
+                    "ISSABEL_SFTP_KNOWN_HOSTS is required unless insecure host-key checking "
+                    "is explicitly enabled"
+                )
         if self.environment.casefold() != "production":
             return self
         errors: list[str] = []
         if self.auth_disabled:
             errors.append("AUTH_DISABLED must be false")
+        if self.issabel_sftp_allow_insecure_host_key:
+            errors.append("ISSABEL_SFTP_ALLOW_INSECURE_HOST_KEY must be false")
         secrets = {
             "S3_SECRET_KEY": self.s3_secret_key,
             "KEYCLOAK_ADMIN_PASSWORD": self.keycloak_admin_password,

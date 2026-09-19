@@ -23,13 +23,15 @@ docker compose logs --since 15m watcher
 
 ## Watcher live است ولی ready نیست
 
-- `watcher_disabled`: `ISSABEL_IMPORT_MODE` باید `local` یا `shared_folder` باشد.
-- `sftp_mode_not_implemented`: از mount پوشه مشترک استفاده کنید؛ SFTP فعلاً عملیاتی نیست.
+- `watcher_disabled`: `ISSABEL_IMPORT_MODE` باید `local`، `shared_folder` یا `sftp` باشد.
+- خطای SFTP host key: فایل `known_hosts`، اثر انگشت تأییدشده و bind mount آن را بررسی کنید؛ بررسی host key را غیرفعال نکنید.
+- خطای MariaDB: دسترسی شبکه به پورت 3306 و مجوز `SELECT` حساب CDR را بررسی کنید.
 - `watcher_degraded`: مسیر `/recordings` داخل کانتینر را بررسی کنید:
 
 ```powershell
 docker compose exec watcher python -c "from pathlib import Path; p=Path('/recordings'); print(p.exists(), p.is_dir())"
 docker compose logs --since 15m watcher
+docker compose run --rm watcher python -m app.check_issabel
 ```
 
 - فایل کشف نمی‌شود: پسوند مجاز، پسوند موقت، stability window، permission و زیرپوشه quarantine را بررسی کنید.

@@ -11,10 +11,10 @@
 
 ## Issabel و Pipeline
 
-- فقط Local/Shared Folder watcher عملیاتی است؛ SFTP با وجود متغیرهای config پیاده نشده و readiness آن 503 است.
+- Local/Shared Folder و SFTP فقط‌خواندنی عملیاتی‌اند؛ E2E واقعی روی شبکه مقصد هنوز باید در Release Gate ثبت شود.
 - هر Watcher یک tenant ثابت دارد؛ routing چندشرکت از یک پوشه مشترک وجود ندارد.
 - watcher polling است، نه event-driven؛ latency کشف به interval و stability window وابسته است.
-- فایل corrupt از drop-folder به quarantine منتقل می‌شود؛ اتصال مستقیم به spool read-only یا حیاتی Issabel مناسب نیست.
+- در Shared Folder فایل خراب از drop-folder به quarantine منتقل می‌شود؛ در SFTP فایل مبدأ دست‌نخورده می‌ماند و فقط نسخه دریافت‌شده قرنطینه می‌شود.
 - stage واژگانی `diarizing` وجود دارد، ولی سرویس رونویسی ممکن است diarization را داخل همان call انجام دهد و رخداد مستقل تولید نشود.
 
 ## امنیت و نگهداری

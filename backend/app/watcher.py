@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Response
 
 from .config import get_settings
 from .services.logging import configure_logging, get_logger
-from .services.watcher import DatabaseWatcherRepository, LocalRecordingWatcher
+from .services.watcher import DatabaseWatcherRepository, LocalRecordingWatcher, SftpRecordingWatcher
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -21,16 +21,19 @@ logger = get_logger(__name__)
 runtime = {"started_at": datetime.now(UTC), "last_scan_at": None, "last_error": None, "metrics": {}}
 
 
-def build_watcher() -> LocalRecordingWatcher:
+def build_watcher() -> LocalRecordingWatcher | SftpRecordingWatcher:
     tenant_value = settings.issabel_default_tenant_id
     if not tenant_value:
         raise RuntimeError(
             "ISSABEL_DEFAULT_TENANT_ID is required and must match DEFAULT_TENANT_ID used by bootstrap"
         )
-    return LocalRecordingWatcher(settings, DatabaseWatcherRepository(UUID(tenant_value)))
+    repository = DatabaseWatcherRepository(UUID(tenant_value), mode=settings.issabel_import_mode)
+    if settings.issabel_import_mode == "sftp":
+        return SftpRecordingWatcher(settings, repository)
+    return LocalRecordingWatcher(settings, repository)
 
 
-async def _scan_loop(watcher: LocalRecordingWatcher) -> None:
+async def _scan_loop(watcher: LocalRecordingWatcher | SftpRecordingWatcher) -> None:
     while True:
         try:
             runtime["metrics"] = await watcher.scan_once()
@@ -44,7 +47,7 @@ async def _scan_loop(watcher: LocalRecordingWatcher) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if settings.issabel_import_mode not in {"local", "shared_folder"}:
+    if settings.issabel_import_mode == "disabled":
         task = None
     else:
         task = asyncio.create_task(_scan_loop(build_watcher()), name="issabel-scan-loop")
@@ -69,8 +72,6 @@ async def live():
 async def ready():
     if settings.issabel_import_mode == "disabled":
         raise HTTPException(status_code=503, detail="watcher_disabled")
-    if settings.issabel_import_mode == "sftp":
-        raise HTTPException(status_code=503, detail="sftp_mode_not_implemented")
     if runtime["last_error"]:
         raise HTTPException(status_code=503, detail="watcher_degraded")
     return {"status": "ready", "last_scan_at": runtime["last_scan_at"]}

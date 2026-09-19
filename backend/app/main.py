@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated
 
+import asyncssh
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
@@ -3030,15 +3031,18 @@ async def issabel_settings(
         "sftp_host": settings.issabel_sftp_host,
         "sftp_port": settings.issabel_sftp_port,
         "sftp_username": settings.issabel_sftp_username,
-        "sftp_password_configured": bool(settings.issabel_sftp_password),
+        "sftp_password_configured": bool(
+            settings.issabel_sftp_password or settings.issabel_sftp_password_file
+        ),
         "sftp_private_key_configured": bool(settings.issabel_sftp_private_key),
         "sftp_remote_path": settings.issabel_sftp_remote_path,
         "poll_interval": settings.issabel_poll_interval,
         "file_stability_seconds": settings.issabel_file_stability_seconds,
         "allowed_extensions": sorted(settings.issabel_extensions),
         "quarantine_path": settings.issabel_quarantine_path,
-        "cdr_configured": bool(settings.issabel_cdr_database_url),
+        "cdr_configured": bool(settings.issabel_cdr_database_url or settings.issabel_cdr_host),
         "cdr_table": settings.issabel_cdr_table,
+        "cdr_recording_column": settings.issabel_cdr_recording_column,
     }
 
 
@@ -3060,5 +3064,19 @@ async def test_issabel_settings(
             "cdr": "ok" if cdr_ok else "unavailable",
         }
     if settings.issabel_import_mode == "sftp":
-        return {"ok": False, "mode": "sftp", "error": "sftp_puller_not_installed"}
+        from .watcher import build_watcher
+
+        watcher = build_watcher()
+        try:
+            sftp_ok = await watcher.health()
+            cdr_ok = await cdr_matcher.health()
+        except (SQLAlchemyError, OSError, asyncssh.Error):
+            sftp_ok = False
+            cdr_ok = False
+        return {
+            "ok": sftp_ok and cdr_ok,
+            "mode": "sftp",
+            "sftp": "ok" if sftp_ok else "unavailable",
+            "cdr": "ok" if cdr_ok else "unavailable",
+        }
     return {"ok": False, "mode": "disabled", "error": "issabel_import_disabled"}
