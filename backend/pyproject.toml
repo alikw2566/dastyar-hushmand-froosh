@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.13",
   "asyncpg>=0.29",
+  "asyncssh>=2.20",
   "asyncmy>=0.2.9",
   "boto3>=1.34",
   "celery[redis]>=5.4",

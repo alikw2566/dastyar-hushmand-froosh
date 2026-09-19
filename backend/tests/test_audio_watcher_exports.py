@@ -12,7 +12,12 @@ from app.config import Settings
 from app.services.audio import preprocess_audio, validate_audio
 from app.services.exports import render_call_pdf, render_call_xlsx, render_calls_xlsx
 from app.services.pipeline import PipelineFailure
-from app.services.watcher import DurableObservation, ImportResult, LocalRecordingWatcher
+from app.services.watcher import (
+    DurableObservation,
+    ImportResult,
+    LocalRecordingWatcher,
+    source_file_name,
+)
 
 
 def make_wav(path: Path, seconds: float = 2.0) -> None:
@@ -22,6 +27,15 @@ def make_wav(path: Path, seconds: float = 2.0) -> None:
         output.setsampwidth(2)
         output.setframerate(16_000)
         output.writeframes(b"\0\0" * frames)
+
+
+def test_sftp_source_preserves_original_recording_name(tmp_path):
+    staged = tmp_path / "random-prefix-call-123.wav"
+    assert (
+        source_file_name(staged, "sftp://pbx.example:22/recordings/2026/09/call-123.wav")
+        == "call-123.wav"
+    )
+    assert source_file_name(staged, str(staged)) == staged.name
 
 
 def test_audio_validation_and_standard_preprocessing(tmp_path):

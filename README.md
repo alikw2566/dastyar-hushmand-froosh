@@ -151,18 +151,26 @@ flowchart LR
 
 ## اتصال Issabel/Asterisk
 
-روش پشتیبانی‌شده فعلی، پوشه Local/Shared Folder است. نمونه Windows:
+سه روش ورودی پشتیبانی می‌شود: پوشه Local، Shared Folder و SFTP فقط‌خواندنی. نمونه SFTP برای سرور Issabel:
 
 ```dotenv
-ISSABEL_IMPORT_MODE=shared_folder
-ISSABEL_HOST_RECORDINGS_PATH=Z:\Issabel\recordings-drop
-ISSABEL_RECORDINGS_PATH=/recordings
-ISSABEL_QUARANTINE_PATH=/quarantine
+ISSABEL_IMPORT_MODE=sftp
+ISSABEL_SFTP_HOST=IP-ISSABEL
+ISSABEL_SFTP_USERNAME=readonly_user
+ISSABEL_SFTP_PASSWORD="رمز-فقط-در-env-سرور"
+ISSABEL_SFTP_REMOTE_PATH=/recordings
+ISSABEL_CDR_HOST=IP-ISSABEL
+ISSABEL_CDR_PORT=3306
+ISSABEL_CDR_USERNAME=cdr_reader
+ISSABEL_CDR_PASSWORD="رمز-فقط-در-env-سرور"
+ISSABEL_CDR_DATABASE=asteriskcdrdb
+ISSABEL_CDR_TABLE=cdr
+ISSABEL_CDR_RECORDING_COLUMN=recordingfile
 DEFAULT_TENANT_ID=UUID-شرکت
 ISSABEL_DEFAULT_TENANT_ID=UUID-شرکت
 ```
 
-`DEFAULT_TENANT_ID` و `ISSABEL_DEFAULT_TENANT_ID` باید دقیقاً برابر باشند. پیش از ورود فایل واقعی، ساخت مدیر اولیه و سازمان باید موفق شده باشد. حالت SFTP هنوز عملیاتی نیست؛ راهنمای کامل در [docs/ISSABEL_INTEGRATION.md](docs/ISSABEL_INTEGRATION.md) قرار دارد.
+`DEFAULT_TENANT_ID` و `ISSABEL_DEFAULT_TENANT_ID` باید دقیقاً برابر باشند. پیش از ورود فایل واقعی، ساخت مدیر اولیه و سازمان باید موفق شده باشد. کلید میزبان SSH باید در فایل `known_hosts` pin شود؛ راهنمای کامل در [docs/ISSABEL_INTEGRATION.md](docs/ISSABEL_INTEGRATION.md) قرار دارد.
 
 ## اجرای دستی محیط کامل
 

@@ -38,6 +38,40 @@ def test_production_configuration_rejects_insecure_defaults():
     assert celery_app.conf.task_time_limit > celery_app.conf.task_soft_time_limit
 
 
+def test_issabel_cdr_url_is_built_without_manual_password_escaping(tmp_path):
+    secret = tmp_path / "cdr-password"
+    secret.write_text("p@ss:#word!", encoding="utf-8")
+    configured = Settings(
+        _env_file=None,
+        issabel_cdr_host="192.0.2.10",
+        issabel_cdr_username="cdr_reader",
+        issabel_cdr_password_file=str(secret),
+        issabel_cdr_database="asteriskcdrdb",
+    )
+    url = configured.resolved_issabel_cdr_database_url
+    assert url.drivername == "mysql+asyncmy"
+    assert url.password == "p@ss:#word!"
+    assert url.host == "192.0.2.10"
+
+
+def test_sftp_mode_requires_host_username_and_verified_host_key():
+    with pytest.raises(ValidationError, match="ISSABEL_SFTP_HOST"):
+        Settings(
+            _env_file=None,
+            issabel_import_mode="sftp",
+            issabel_default_tenant_id="11111111-1111-4111-8111-111111111111",
+        )
+    with pytest.raises(ValidationError, match="ISSABEL_SFTP_KNOWN_HOSTS"):
+        Settings(
+            _env_file=None,
+            issabel_import_mode="sftp",
+            issabel_default_tenant_id="11111111-1111-4111-8111-111111111111",
+            issabel_sftp_host="192.0.2.10",
+            issabel_sftp_username="reader",
+            issabel_sftp_known_hosts="",
+        )
+
+
 def test_first_admin_environment_validation_and_stable_tenant_id():
     assert parse_bootstrap_environment({}) is None
     with pytest.raises(ValueError, match="missing bootstrap"):

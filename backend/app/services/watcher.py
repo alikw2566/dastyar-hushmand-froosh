@@ -1,17 +1,21 @@
-"""Polling watcher for local paths and operating-system mounted network shares."""
+"""Polling watchers for mounted folders and read-only Issabel SFTP accounts."""
 
 from __future__ import annotations
 
 import hashlib
 import mimetypes
+import posixpath
 import shutil
 import socket
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Protocol
-from uuid import UUID
+from urllib.parse import urlsplit
+from uuid import UUID, uuid4
 
+import asyncssh
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
@@ -39,6 +43,14 @@ class DurableObservation:
     detected_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class RemoteRecording:
+    path: str
+    name: str
+    size: int
+    mtime_ns: int
+
+
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
@@ -51,7 +63,18 @@ class WatcherRepository(Protocol):
         observed_at: datetime,
         stability_seconds: int,
     ) -> DurableObservation: ...
+    async def observe_source(
+        self,
+        source_identifier: str,
+        file_name: str,
+        size: int,
+        mtime_ns: int,
+        observed_at: datetime,
+        stability_seconds: int,
+    ) -> DurableObservation: ...
+    async def is_source_processed(self, source_identifier: str) -> bool: ...
     async def is_duplicate(self, source_identifier: str, sha256: str) -> bool: ...
+    async def mark_duplicate(self, source_identifier: str, sha256: str) -> None: ...
     async def import_file(
         self,
         path: Path,
@@ -78,6 +101,12 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
         for chunk in iter(lambda: handle.read(chunk_size), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def source_file_name(path: Path, source_identifier: str) -> str:
+    if source_identifier.startswith("sftp://"):
+        return PurePosixPath(urlsplit(source_identifier).path).name
+    return path.name
 
 
 class LocalRecordingWatcher:
@@ -179,11 +208,199 @@ class LocalRecordingWatcher:
         return self.metrics.copy()
 
 
+class SftpRecordingWatcher:
+    """Read recordings over SFTP without requesting shell or write access."""
+
+    def __init__(self, settings: Settings, repository: WatcherRepository):
+        self.settings = settings
+        self.repository = repository
+        self.staging_root = Path(settings.issabel_sftp_staging_path).expanduser().resolve()
+        self.quarantine_root = Path(settings.issabel_quarantine_path).expanduser().resolve()
+        self.metrics = {
+            "discovered": 0,
+            "downloaded": 0,
+            "imported": 0,
+            "duplicates": 0,
+            "quarantined": 0,
+            "waiting": 0,
+            "errors": 0,
+        }
+
+    @property
+    def _temporary_extensions(self) -> frozenset[str]:
+        return frozenset(
+            item if item.startswith(".") else f".{item}"
+            for item in (
+                part.strip().lower()
+                for part in self.settings.issabel_temporary_extensions.split(",")
+            )
+            if item
+        )
+
+    async def _candidate_recordings(self, sftp) -> list[RemoteRecording]:
+        root = str(PurePosixPath(self.settings.issabel_sftp_remote_path))
+        pending = [(root, 0)]
+        recordings: list[RemoteRecording] = []
+        while pending and len(recordings) < self.settings.issabel_sftp_max_files_per_scan:
+            current, depth = pending.pop()
+            async for entry in sftp.scandir(current):
+                name = entry.filename
+                if name in {".", ".."} or PurePosixPath(name).name != name:
+                    continue
+                remote_path = posixpath.join(current, name)
+                mode = entry.attrs.permissions or 0
+                file_type = entry.attrs.type
+                is_directory = stat.S_ISDIR(mode) or file_type == asyncssh.FILEXFER_TYPE_DIRECTORY
+                is_regular = stat.S_ISREG(mode) or file_type == asyncssh.FILEXFER_TYPE_REGULAR
+                if is_directory:
+                    if depth < self.settings.issabel_sftp_max_depth:
+                        pending.append((remote_path, depth + 1))
+                    continue
+                if not is_regular:
+                    continue
+                suffix = PurePosixPath(name).suffix.lower()
+                if suffix in self._temporary_extensions or suffix not in self.settings.issabel_extensions:
+                    continue
+                recordings.append(
+                    RemoteRecording(
+                        path=remote_path,
+                        name=name,
+                        size=int(entry.attrs.size or 0),
+                        mtime_ns=int(entry.attrs.mtime or 0) * 1_000_000_000,
+                    )
+                )
+                if len(recordings) >= self.settings.issabel_sftp_max_files_per_scan:
+                    break
+        return sorted(recordings, key=lambda item: item.path)
+
+    async def _scan_client(self, sftp) -> None:
+        self.staging_root.mkdir(parents=True, exist_ok=True)
+        for remote in await self._candidate_recordings(sftp):
+            self.metrics["discovered"] += 1
+            source_identifier = (
+                f"sftp://{self.settings.issabel_sftp_host}:"
+                f"{self.settings.issabel_sftp_port}{remote.path}"
+            )
+            if await self.repository.is_source_processed(source_identifier):
+                self.metrics["duplicates"] += 1
+                continue
+            observation = await self.repository.observe_source(
+                source_identifier,
+                remote.name,
+                remote.size,
+                remote.mtime_ns,
+                datetime.now(UTC),
+                self.settings.issabel_file_stability_seconds,
+            )
+            if not observation.stable:
+                self.metrics["waiting"] += 1
+                continue
+            local_path = self.staging_root / f"{uuid4().hex}-{remote.name}"
+            try:
+                await sftp.get(remote.path, str(local_path), preserve=False)
+                self.metrics["downloaded"] += 1
+                digest = sha256_file(local_path)
+                if await self.repository.is_duplicate(source_identifier, digest):
+                    await self.repository.mark_duplicate(source_identifier, digest)
+                    self.metrics["duplicates"] += 1
+                    continue
+                try:
+                    validate_audio(
+                        local_path,
+                        allowed_extensions=self.settings.issabel_extensions,
+                        max_bytes=self.settings.max_audio_bytes,
+                        min_duration_seconds=self.settings.audio_min_duration_seconds,
+                        ffprobe_path=self.settings.audio_ffprobe_path,
+                    )
+                    metadata = parse_issabel_filename(
+                        remote.name, self.settings.issabel_filename_pattern
+                    )
+                    result = await self.repository.import_file(
+                        local_path, source_identifier, digest, observation.detected_at, metadata
+                    )
+                    self.metrics["imported" if result.status == "imported" else "duplicates"] += 1
+                except PipelineFailure as exc:
+                    await self.repository.quarantine(
+                        local_path,
+                        source_identifier,
+                        digest,
+                        observation.detected_at,
+                        exc,
+                        self.quarantine_root,
+                    )
+                    self.metrics["quarantined"] += 1
+            finally:
+                local_path.unlink(missing_ok=True)
+
+    def _connection_options(self) -> dict:
+        known_hosts = None
+        if not self.settings.issabel_sftp_allow_insecure_host_key:
+            known_hosts_path = Path(self.settings.issabel_sftp_known_hosts)
+            if not known_hosts_path.is_file():
+                raise FileNotFoundError(f"SFTP known_hosts file not found: {known_hosts_path}")
+            known_hosts = str(known_hosts_path)
+        return {
+            "port": self.settings.issabel_sftp_port,
+            "username": self.settings.issabel_sftp_username,
+            "password": self.settings.resolved_issabel_sftp_password or None,
+            "client_keys": [self.settings.issabel_sftp_private_key]
+            if self.settings.issabel_sftp_private_key
+            else None,
+            "known_hosts": known_hosts,
+            "login_timeout": 10,
+        }
+
+    async def health(self) -> bool:
+        async with asyncssh.connect(
+            self.settings.issabel_sftp_host, **self._connection_options()
+        ) as connection, connection.start_sftp_client() as sftp:
+            await sftp.stat(self.settings.issabel_sftp_remote_path)
+        return True
+
+    async def scan_once(self) -> dict:
+        scan_started = datetime.now(UTC)
+        self.metrics["waiting"] = 0
+        try:
+            async with asyncssh.connect(
+                self.settings.issabel_sftp_host,
+                **self._connection_options(),
+            ) as connection, connection.start_sftp_client() as sftp:
+                await self._scan_client(sftp)
+            await self.repository.heartbeat(
+                "healthy", {**self.metrics, "scan_started_at": scan_started.isoformat()}
+            )
+        except Exception as exc:
+            self.metrics["errors"] += 1
+            await self.repository.heartbeat("degraded", self.metrics.copy(), str(exc)[:1000])
+            raise
+        return self.metrics.copy()
+
+
 class DatabaseWatcherRepository:
-    def __init__(self, tenant_id: UUID, *, watcher_id: str | None = None, session_provider=None):
+    def __init__(
+        self,
+        tenant_id: UUID,
+        *,
+        watcher_id: str | None = None,
+        mode: str = "local",
+        session_provider=None,
+    ):
         self.tenant_id = tenant_id
         self.watcher_id = watcher_id or f"{socket.gethostname()}-issabel"
+        self.mode = mode
         self.session_provider = session_provider or tenant_session
+
+    async def is_source_processed(self, source_identifier: str) -> bool:
+        async for session in self.session_provider(str(self.tenant_id)):
+            row = await session.scalar(
+                select(SourceImport.id).where(
+                    SourceImport.tenant_id == self.tenant_id,
+                    SourceImport.source_identifier == source_identifier,
+                    SourceImport.status.in_(["imported", "quarantined"]),
+                )
+            )
+            return row is not None
+        return False
 
     async def is_duplicate(self, source_identifier: str, sha256: str) -> bool:
         async for session in self.session_provider(str(self.tenant_id)):
@@ -208,6 +425,24 @@ class DatabaseWatcherRepository:
         stability_seconds: int,
     ) -> DurableObservation:
         stat = path.stat()
+        return await self.observe_source(
+            source_identifier,
+            path.name,
+            stat.st_size,
+            stat.st_mtime_ns,
+            observed_at,
+            stability_seconds,
+        )
+
+    async def observe_source(
+        self,
+        source_identifier: str,
+        file_name: str,
+        size: int,
+        mtime_ns: int,
+        observed_at: datetime,
+        stability_seconds: int,
+    ) -> DurableObservation:
         async for session in self.session_provider(str(self.tenant_id)):
             row = await session.scalar(
                 select(SourceImport).where(
@@ -220,11 +455,11 @@ class DatabaseWatcherRepository:
                     tenant_id=self.tenant_id,
                     source_identifier=source_identifier,
                     source_path=source_identifier,
-                    file_name=path.name,
-                    size_bytes=stat.st_size,
+                    file_name=file_name,
+                    size_bytes=size,
                     sha256=None,
-                    observed_size=stat.st_size,
-                    observed_mtime_ns=stat.st_mtime_ns,
+                    observed_size=size,
+                    observed_mtime_ns=mtime_ns,
                     stable_since=observed_at,
                     status="waiting_for_file",
                     detected_at=observed_at,
@@ -234,10 +469,10 @@ class DatabaseWatcherRepository:
                 return DurableObservation(False, observed_at)
             if row.status in {"imported", "quarantined"}:
                 return DurableObservation(True, _as_utc(row.detected_at))
-            if row.observed_size != stat.st_size or row.observed_mtime_ns != stat.st_mtime_ns:
-                row.size_bytes = stat.st_size
-                row.observed_size = stat.st_size
-                row.observed_mtime_ns = stat.st_mtime_ns
+            if row.observed_size != size or row.observed_mtime_ns != mtime_ns:
+                row.size_bytes = size
+                row.observed_size = size
+                row.observed_mtime_ns = mtime_ns
                 row.stable_since = observed_at
                 row.status = "waiting_for_file"
                 await session.commit()
@@ -249,6 +484,29 @@ class DatabaseWatcherRepository:
             return DurableObservation(stable, _as_utc(row.detected_at))
         raise RuntimeError("database session unavailable")
 
+    async def mark_duplicate(self, source_identifier: str, sha256: str) -> None:
+        async for session in self.session_provider(str(self.tenant_id)):
+            existing = await session.scalar(
+                select(SourceImport).where(
+                    SourceImport.tenant_id == self.tenant_id,
+                    SourceImport.sha256 == sha256,
+                    SourceImport.status == "imported",
+                )
+            )
+            source = await session.scalar(
+                select(SourceImport).where(
+                    SourceImport.tenant_id == self.tenant_id,
+                    SourceImport.source_identifier == source_identifier,
+                )
+            )
+            if source is not None:
+                source.sha256 = sha256
+                source.call_id = existing.call_id if existing else None
+                source.status = "imported"
+                source.imported_at = datetime.now(UTC)
+                await session.commit()
+            return
+
     async def import_file(
         self,
         path: Path,
@@ -257,7 +515,8 @@ class DatabaseWatcherRepository:
         detected_at: datetime,
         metadata: CallFileMetadata,
     ) -> ImportResult:
-        cdr = await cdr_matcher.match(metadata)
+        original_name = source_file_name(path, source_identifier)
+        cdr = await cdr_matcher.match(metadata, recording_file=original_name)
         cdr_row = cdr.row or {}
         agent_extension = metadata.agent_extension or cdr_matcher.extension(
             cdr_row.get("dstchannel") or cdr_row.get("channel")
@@ -268,9 +527,9 @@ class DatabaseWatcherRepository:
                 external_id=str(
                     cdr_row.get("uniqueid") or metadata.unique_call_id or f"issabel:{sha256}"
                 ),
-                original_file_name=path.name,
+                original_file_name=original_name,
                 object_key="pending",
-                mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                mime_type=mimetypes.guess_type(original_name)[0] or "application/octet-stream",
                 size_bytes=path.stat().st_size,
                 source="issabel",
                 source_path=source_identifier,
@@ -308,7 +567,7 @@ class DatabaseWatcherRepository:
                 )
                 with path.open("rb") as handle:
                     call.object_key = await storage.upload(
-                        self.tenant_id, call.id, path.name, call.mime_type, handle
+                        self.tenant_id, call.id, original_name, call.mime_type, handle
                     )
                 call.status = CallStatus.queued
                 source = await session.scalar(
@@ -390,7 +649,7 @@ class DatabaseWatcherRepository:
                     watcher_id=self.watcher_id,
                     tenant_id=self.tenant_id,
                     host=socket.gethostname(),
-                    mode="local",
+                    mode=self.mode,
                 )
                 session.add(row)
             row.status = status

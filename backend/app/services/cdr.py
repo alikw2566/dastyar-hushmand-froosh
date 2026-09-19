@@ -26,29 +26,57 @@ class CdrMatchResult:
 class IssabelCdrMatcher:
     def __init__(self):
         self.settings = get_settings()
+        database_url = self.settings.resolved_issabel_cdr_database_url
         self.engine = (
             create_async_engine(
-                self.settings.issabel_cdr_database_url,
+                database_url,
                 pool_pre_ping=True,
                 connect_args={"connect_timeout": 5},
             )
-            if self.settings.issabel_cdr_database_url
+            if database_url
             else None
         )
 
-    async def match(self, metadata: CallFileMetadata) -> CdrMatchResult:
+    async def match(
+        self, metadata: CallFileMetadata, *, recording_file: str | None = None
+    ) -> CdrMatchResult:
         if self.engine is None:
             return CdrMatchResult("unmatched", "cdr_not_configured", 0)
         table = self.settings.issabel_cdr_table
+        recording_column = self.settings.issabel_cdr_recording_column
         try:
             async with self.engine.connect() as connection:
+                if recording_file:
+                    rows = (
+                        (
+                            await connection.execute(
+                                text(
+                                    f"SELECT uniqueid, src, dst, calldate, duration, disposition, "
+                                    f"channel, dstchannel, `{recording_column}` AS recordingfile "
+                                    f"FROM `{table}` WHERE `{recording_column}`=:recording_file "
+                                    f"OR `{recording_column}` LIKE :recording_suffix LIMIT 3"
+                                ),
+                                {
+                                    "recording_file": recording_file,
+                                    "recording_suffix": f"%/{recording_file}",
+                                },
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    if len(rows) == 1:
+                        return CdrMatchResult("matched", "recordingfile", 1, dict(rows[0]))
+                    if len(rows) > 1:
+                        return CdrMatchResult("ambiguous", "recordingfile", len(rows))
                 if metadata.unique_call_id:
                     rows = (
                         (
                             await connection.execute(
                                 text(
                                     f"SELECT uniqueid, src, dst, calldate, duration, disposition, "
-                                    f"channel, dstchannel FROM `{table}` WHERE uniqueid=:uniqueid LIMIT 2"
+                                    f"channel, dstchannel, `{recording_column}` AS recordingfile "
+                                    f"FROM `{table}` WHERE uniqueid=:uniqueid LIMIT 2"
                                 ),
                                 {"uniqueid": metadata.unique_call_id},
                             )
@@ -69,7 +97,8 @@ class IssabelCdrMatcher:
                             await connection.execute(
                                 text(
                                     f"SELECT uniqueid, src, dst, calldate, duration, disposition, "
-                                    f"channel, dstchannel FROM `{table}` "
+                                    f"channel, dstchannel, `{recording_column}` AS recordingfile "
+                                    f"FROM `{table}` "
                                     "WHERE calldate BETWEEN :start AND :end "
                                     "AND (:src IS NULL OR src=:src) AND (:dst IS NULL OR dst=:dst) "
                                     "ORDER BY ABS(TIMESTAMPDIFF(SECOND, calldate, :at)) LIMIT 3"
