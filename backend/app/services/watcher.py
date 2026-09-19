@@ -259,7 +259,10 @@ class SftpRecordingWatcher:
                 if not is_regular:
                     continue
                 suffix = PurePosixPath(name).suffix.lower()
-                if suffix in self._temporary_extensions or suffix not in self.settings.issabel_extensions:
+                if (
+                    suffix in self._temporary_extensions
+                    or suffix not in self.settings.issabel_extensions
+                ):
                     continue
                 recordings.append(
                     RemoteRecording(
@@ -351,9 +354,12 @@ class SftpRecordingWatcher:
         }
 
     async def health(self) -> bool:
-        async with asyncssh.connect(
-            self.settings.issabel_sftp_host, **self._connection_options()
-        ) as connection, connection.start_sftp_client() as sftp:
+        async with (
+            asyncssh.connect(
+                self.settings.issabel_sftp_host, **self._connection_options()
+            ) as connection,
+            connection.start_sftp_client() as sftp,
+        ):
             await sftp.stat(self.settings.issabel_sftp_remote_path)
         return True
 
@@ -361,10 +367,13 @@ class SftpRecordingWatcher:
         scan_started = datetime.now(UTC)
         self.metrics["waiting"] = 0
         try:
-            async with asyncssh.connect(
-                self.settings.issabel_sftp_host,
-                **self._connection_options(),
-            ) as connection, connection.start_sftp_client() as sftp:
+            async with (
+                asyncssh.connect(
+                    self.settings.issabel_sftp_host,
+                    **self._connection_options(),
+                ) as connection,
+                connection.start_sftp_client() as sftp,
+            ):
                 await self._scan_client(sftp)
             await self.repository.heartbeat(
                 "healthy", {**self.metrics, "scan_started_at": scan_started.isoformat()}

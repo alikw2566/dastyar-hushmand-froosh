@@ -3040,9 +3040,7 @@ async def issabel_settings(
         "file_stability_seconds": settings.issabel_file_stability_seconds,
         "allowed_extensions": sorted(settings.issabel_extensions),
         "quarantine_path": settings.issabel_quarantine_path,
-        "cdr_configured": bool(
-            settings.issabel_cdr_database_url or settings.issabel_cdr_host
-        ),
+        "cdr_configured": bool(settings.issabel_cdr_database_url or settings.issabel_cdr_host),
         "cdr_table": settings.issabel_cdr_table,
         "cdr_recording_column": settings.issabel_cdr_recording_column,
     }

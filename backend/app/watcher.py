@@ -27,9 +27,7 @@ def build_watcher() -> LocalRecordingWatcher | SftpRecordingWatcher:
         raise RuntimeError(
             "ISSABEL_DEFAULT_TENANT_ID is required and must match DEFAULT_TENANT_ID used by bootstrap"
         )
-    repository = DatabaseWatcherRepository(
-        UUID(tenant_value), mode=settings.issabel_import_mode
-    )
+    repository = DatabaseWatcherRepository(UUID(tenant_value), mode=settings.issabel_import_mode)
     if settings.issabel_import_mode == "sftp":
         return SftpRecordingWatcher(settings, repository)
     return LocalRecordingWatcher(settings, repository)
